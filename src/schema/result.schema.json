@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/wedding/scripts/result.schema.json",
+  "title": "Wedding Scripts Parsed Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["meta", "results", "raw"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["website", "kind", "count", "generatedAt", "schemaVersion"],
+      "properties": {
+        "website": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["profiles", "aggregations", "unknown"] },
+        "count": { "type": "integer", "minimum": 0 },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "schemaVersion": { "type": "string", "const": "2.0" }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "normalized", "raw"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["profile", "aggregation", "unknown"] },
+          "normalized": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "website",
+              "kind",
+              "id",
+              "name",
+              "url",
+              "slug",
+              "description",
+              "location",
+              "ratings",
+              "pricing",
+              "categories",
+              "tags",
+              "media",
+              "source",
+              "flags",
+              "metrics",
+              "attributes"
+            ],
+            "properties": {
+              "website": { "type": "string", "minLength": 1 },
+              "kind": { "type": "string", "enum": ["profile", "aggregation"] },
+              "id": {},
+              "name": { "type": ["string", "null"] },
+              "url": { "type": ["string", "null"] },
+              "slug": { "type": ["string", "null"] },
+              "description": { "type": ["string", "null"] },
+              "location": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": [
+                  "text",
+                  "street_address",
+                  "city",
+                  "postcode",
+                  "region",
+                  "country",
+                  "latitude",
+                  "longitude"
+                ],
+                "properties": {
+                  "text": { "type": ["string", "null"] },
+                  "street_address": { "type": ["string", "null"] },
+                  "city": { "type": ["string", "null"] },
+                  "postcode": { "type": ["string", "null"] },
+                  "region": { "type": ["string", "null"] },
+                  "country": { "type": ["string", "null"] },
+                  "latitude": { "type": ["number", "null"] },
+                  "longitude": { "type": ["number", "null"] }
+                }
+              },
+              "ratings": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["value", "count", "best", "worst", "average"],
+                "properties": {
+                  "value": { "type": ["number", "null"] },
+                  "count": { "type": ["integer", "null"] },
+                  "best": { "type": ["number", "null"] },
+                  "worst": { "type": ["number", "null"] },
+                  "average": { "type": ["number", "null"] }
+                }
+              },
+              "pricing": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["min", "max", "raw", "currency"],
+                "properties": {
+                  "min": { "type": ["number", "null"] },
+                  "max": { "type": ["number", "null"] },
+                  "raw": { "type": ["object", "array", "string", "number", "boolean", "null"] },
+                  "currency": { "type": ["string", "null"] }
+                }
+              },
+              "categories": { "type": ["array", "null"], "items": {} },
+              "tags": { "type": ["array", "null"], "items": {} },
+              "media": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["image_url", "cover_urls", "gallery_urls", "video_urls"],
+                "properties": {
+                  "image_url": { "type": ["string", "null"] },
+                  "cover_urls": { "type": ["array", "null"], "items": { "type": "string" } },
+                  "gallery_urls": { "type": ["array", "null"], "items": { "type": "string" } },
+                  "video_urls": { "type": ["array", "null"], "items": { "type": "string" } }
+                }
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": ["url", "slug", "position", "index", "origin"],
+                "properties": {
+                  "url": { "type": ["string", "null"] },
+                  "slug": { "type": ["string", "null"] },
+                  "position": { "type": ["integer", "null"] },
+                  "index": { "type": ["string", "null"] },
+                  "origin": { "type": ["string", "null"] }
+                }
+              },
+              "flags": { "type": ["object", "null"], "additionalProperties": true },
+              "metrics": { "type": ["object", "null"], "additionalProperties": true },
+              "attributes": { "type": ["object", "null"], "additionalProperties": true }
+            }
+          },
+          "raw": { "type": ["object", "array", "string", "number", "boolean", "null"] }
+        }
+      }
+    },
+    "raw": {
+      "type": ["object", "array", "string", "number", "boolean", "null"]
+    }
+  }
+}

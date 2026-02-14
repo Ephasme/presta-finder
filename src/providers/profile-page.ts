@@ -70,7 +70,10 @@ const extractDescription = ($: cheerio.CheerioAPI, selectors: string[]): string 
 
 const extractRatingCount = ($: cheerio.CheerioAPI): number | null => {
   const parseCountToken = (token: string): number | null => {
-    const digits = token.replaceAll(".", "").replaceAll(",", "").replace(/[^0-9]/g, "")
+    const digits = token
+      .replaceAll(".", "")
+      .replaceAll(",", "")
+      .replaceAll(/[^0-9]/g, "")
     if (!digits) {
       return null
     }
@@ -79,13 +82,21 @@ const extractRatingCount = ($: cheerio.CheerioAPI): number | null => {
 
   const text = normalizeSpaces($.root().text())
   const tokens = text.split(" ").filter((token) => token.length > 0)
-  const ratingWords = new Set(["avis", "review", "reviews", "evaluation", "evaluations", "évaluation", "évaluations"])
+  const ratingWords = new Set([
+    "avis",
+    "review",
+    "reviews",
+    "evaluation",
+    "evaluations",
+    "évaluation",
+    "évaluations",
+  ])
   const normalizeRatingWord = (token: string): string =>
     token
       .toLowerCase()
-      .replace(/[^a-z\u00e0-\u00ff]/g, "")
+      .replaceAll(/[^a-z\u00e0-\u00ff]/g, "")
       .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
+      .replaceAll(/[\u0300-\u036f]/g, "")
 
   for (let i = 1; i < tokens.length; i += 1) {
     const token = normalizeRatingWord(tokens[i] ?? "")
@@ -176,7 +187,9 @@ const extractRatingValue = ($: cheerio.CheerioAPI): number | null => {
 
 const extractPrices = ($: cheerio.CheerioAPI): number[] => {
   const texts: string[] = []
-  const candidates = $('[class*="price"], [class*="Price"], [data-test*="price"], [aria-label*="€"], [aria-label*="euro"]')
+  const candidates = $(
+    '[class*="price"], [class*="Price"], [data-test*="price"], [aria-label*="€"], [aria-label*="euro"]',
+  )
   for (const node of candidates.toArray()) {
     const text = normalizeSpaces($(node).text())
     if (text.length > 0) {
@@ -249,7 +262,10 @@ const extractPrices = ($: cheerio.CheerioAPI): number[] => {
   return prices
 }
 
-export const parseGenericProfilePage = (html: string, descriptionSelectors: string[]): ParsedProfilePage => {
+export const parseGenericProfilePage = (
+  html: string,
+  descriptionSelectors: string[],
+): ParsedProfilePage => {
   const $ = cheerio.load(html)
   const pricesFound = extractPrices($)
   return {

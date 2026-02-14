@@ -1,11 +1,8 @@
-import { readFile } from "node:fs/promises"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { getPromptConfig } from "../service-types/registry.js"
+import { renderSystemPrompt, type RenderContext } from "../service-types/prompt-render.js"
+import type { ServiceTypeId } from "../service-types/types.js"
 
-const DEFAULT_RELATIVE_PROMPT_PATH = "../../prompts/dj-evaluation-criteria.md"
-
-export const loadCriteriaTemplate = async (): Promise<string> => {
-  const moduleDir = dirname(fileURLToPath(import.meta.url))
-  const promptPath = join(moduleDir, DEFAULT_RELATIVE_PROMPT_PATH)
-  return readFile(promptPath, "utf-8")
+export const loadCriteriaText = (serviceTypeId: ServiceTypeId, ctx: RenderContext): string => {
+  const config = getPromptConfig(serviceTypeId)
+  return renderSystemPrompt(config, ctx)
 }

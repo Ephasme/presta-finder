@@ -1,6 +1,5 @@
-import type { NormalizedProfile } from "../schema/normalized.js"
-import { coerceFloat, coerceInt } from "../utils/coerce.js"
 import type { EvaluationResult } from "./evaluate-profiles.js"
+import { profileTitle } from "./profile-title.js"
 
 const sortKey = (item: EvaluationResult): [number, number] => {
   const score = item.evaluation?.score
@@ -10,10 +9,10 @@ const sortKey = (item: EvaluationResult): [number, number] => {
   return [1, -1]
 }
 
-const safeMd = (value: unknown): string => String(value ?? "").replaceAll("|", "\\|")
-
-const profileTitle = (profile: NormalizedProfile): string =>
-  profile.name || profile.slug || profile.url || `${profile.website}:${String(profile.id)}`
+const safeMd = (value: unknown): string => {
+  const s = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value)
+  return s.replaceAll("|", "\\|")
+}
 
 const formatMoney = (value: number | null): string => {
   if (value === null) {
@@ -38,39 +37,37 @@ const formatRating = (value: number | null, count: number | null): string => {
 export const renderReport = (args: {
   evals: EvaluationResult[]
   model: string
-  reasoningEffort: string
+  reasoningEffort: string | null
   verbosity: string
   criteriaText: string
-  maxProfiles?: number
+  serviceTypeLabel?: string
 }): string => {
   const lines: string[] = []
-  let ordered = [...args.evals].sort((a, b) => {
+  const ordered = [...args.evals].sort((a, b) => {
     const aKey = sortKey(a)
     const bKey = sortKey(b)
     if (aKey[0] !== bKey[0]) return aKey[0] - bKey[0]
     return aKey[1] - bKey[1]
   })
-  if (typeof args.maxProfiles === "number") {
-    ordered = ordered.slice(0, Math.max(0, args.maxProfiles))
-  }
 
-  const byWebsite: Record<string, number> = {}
+  const byProvider: Record<string, number> = {}
   for (const item of ordered) {
-    const website = item.profile.website || "unknown"
-    byWebsite[website] = (byWebsite[website] ?? 0) + 1
+    const provider = item.profile.provider || "unknown"
+    byProvider[provider] = (byProvider[provider] ?? 0) + 1
   }
 
-  lines.push(`# DJ — Rapport d'évaluation (${args.model})`)
+  const title = args.serviceTypeLabel ?? "DJ"
+  lines.push(`# ${title} — Rapport d'évaluation (${args.model})`)
   lines.push("")
   lines.push(`- Généré: ${new Date().toISOString()}`)
   lines.push(`- Modèle: ${args.model}`)
-  lines.push(`- Reasoning effort: ${args.reasoningEffort}`)
+  lines.push(`- Reasoning effort: ${args.reasoningEffort ?? "default"}`)
   lines.push(`- Verbosité: ${args.verbosity}`)
   lines.push(`- Profils analysés: ${ordered.length}`)
-  if (Object.keys(byWebsite).length > 0) {
-    const stats = Object.entries(byWebsite)
+  if (Object.keys(byProvider).length > 0) {
+    const stats = Object.entries(byProvider)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([site, count]) => `${site}: ${count}`)
+      .map(([provider, count]) => `${provider}: ${count}`)
       .join(", ")
     lines.push(`- Répartition: ${stats}`)
   }
@@ -83,35 +80,38 @@ export const renderReport = (args: {
   lines.push("")
   lines.push("## Résumé")
   lines.push("")
-  lines.push("| # | Profil | Site | Lieu | Prix min (€) | Note | Score | Verdict |")
+  lines.push("| # | Profil | Provider | Lieu | Prix min (€) | Note | Score | Verdict |")
   lines.push("|---:|---|---|---|---:|---:|---:|---|")
 
-  ordered.forEach((item, idx) => {
+  for (const [idx, item] of ordered.entries()) {
     const profile = item.profile
     const evaluation = item.evaluation
     lines.push(
-      `| ${idx + 1} | ${safeMd(profileTitle(profile))} | ${safeMd(profile.website)} | ${safeMd(profile.location.text ?? profile.location.city ?? "")} | ${formatMoney(coerceFloat(profile.pricing.min))} | ${safeMd(formatRating(coerceFloat(profile.ratings.value), coerceInt(profile.ratings.count)))} | ${evaluation?.score ?? ""} | ${safeMd(evaluation?.verdict ?? "")} |`,
+      `| ${idx + 1} | ${safeMd(profileTitle(profile))} | ${safeMd(profile.provider)} | ${safeMd(profile.location.city ?? profile.location.region ?? "")} | ${formatMoney(profile.budgetSummary.minKnownPrice)} | ${safeMd(formatRating(profile.reputation.rating, profile.reputation.reviewCount))} | ${evaluation?.score ?? ""} | ${safeMd(evaluation?.verdict ?? "")} |`,
     )
-  })
+  }
 
   lines.push("")
   lines.push("## Détails par profil")
 
-  ordered.forEach((item, idx) => {
+  for (const [idx, item] of ordered.entries()) {
     const profile = item.profile
     lines.push("")
-    lines.push(`### ${idx + 1}. ${profileTitle(profile)} — ${profile.website}`)
+    lines.push(`### ${idx + 1}. ${profileTitle(profile)} — ${profile.provider}`)
     lines.push("")
-    if (profile.url) lines.push(`- URL: ${profile.url}`)
-    if (profile.slug) lines.push(`- Slug: ${profile.slug}`)
-    if (profile.location.text || profile.location.city) {
-      lines.push(`- Lieu: ${profile.location.text ?? profile.location.city ?? ""}`)
+    if (profile.profileUrl) lines.push(`- URL: ${profile.profileUrl}`)
+    if (profile.providerId) lines.push(`- ID: ${profile.providerId}`)
+    if (profile.location.city || profile.location.region) {
+      const location = [profile.location.city, profile.location.region]
+        .filter((v): v is string => Boolean(v))
+        .join(", ")
+      if (location) lines.push(`- Lieu: ${location}`)
     }
-    const priceMin = formatMoney(coerceFloat(profile.pricing.min))
+    const priceMin = formatMoney(profile.budgetSummary.minKnownPrice)
     if (priceMin) lines.push(`- Prix min: ${priceMin} €`)
-    const priceMax = formatMoney(coerceFloat(profile.pricing.max))
+    const priceMax = formatMoney(profile.budgetSummary.maxKnownPrice)
     if (priceMax) lines.push(`- Prix max: ${priceMax} €`)
-    const rating = formatRating(coerceFloat(profile.ratings.value), coerceInt(profile.ratings.count))
+    const rating = formatRating(profile.reputation.rating, profile.reputation.reviewCount)
     if (rating) lines.push(`- Note: ${rating}`)
 
     if (item.evaluation) {
@@ -122,7 +122,8 @@ export const renderReport = (args: {
       if (evaluation.pros.length) lines.push(`- Points forts: ${evaluation.pros.join("; ")}`)
       if (evaluation.cons.length) lines.push(`- Points faibles: ${evaluation.cons.join("; ")}`)
       if (evaluation.risks.length) lines.push(`- Risques: ${evaluation.risks.join("; ")}`)
-      if (evaluation.missing_info.length) lines.push(`- Infos manquantes: ${evaluation.missing_info.join("; ")}`)
+      if (evaluation.missing_info.length)
+        lines.push(`- Infos manquantes: ${evaluation.missing_info.join("; ")}`)
       if (evaluation.questions.length) lines.push(`- Questions: ${evaluation.questions.join("; ")}`)
       if (evaluation.score_breakdown) {
         const detail = Object.entries(evaluation.score_breakdown)
@@ -139,7 +140,7 @@ export const renderReport = (args: {
     } else {
       lines.push(`- Erreur: ${item.error}`)
     }
-  })
+  }
 
   lines.push("")
   lines.push("---")

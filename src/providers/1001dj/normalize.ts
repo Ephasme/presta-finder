@@ -1,4 +1,12 @@
-import { makeLocation, makeMedia, makeNormalizedResult, makePricing, makeRatings, makeSource, type ResultItem } from "../../schema/normalized.js"
+import {
+  makeLocation,
+  makeMedia,
+  makeNormalizedResult,
+  makePricing,
+  makeRatings,
+  makeSource,
+  type ResultItem,
+} from "../../schema/normalized.js"
 
 export interface ItemListEntry {
   position: number | null
@@ -30,11 +38,13 @@ const slugFromUrl = (url: string): string | null => {
   return match?.[1] ?? null
 }
 
-export const normalizeItem = (entry: ItemListEntry) => {
+export const buildProfile = (entry: ItemListEntry) => {
   const slug = slugFromUrl(entry.url)
-  const locationParts = [entry.address_locality, entry.address_region, entry.address_country].filter(
-    (v): v is string => Boolean(v),
-  )
+  const locationParts = [
+    entry.address_locality,
+    entry.address_region,
+    entry.address_country,
+  ].filter((v): v is string => Boolean(v))
   const locationText = locationParts.length ? locationParts.join(", ") : null
 
   return makeNormalizedResult({
@@ -65,7 +75,9 @@ export const normalizeItem = (entry: ItemListEntry) => {
       min: entry.offer_low_price,
       max: entry.offer_high_price,
       raw:
-        entry.offer_low_price !== null || entry.offer_high_price !== null || entry.offer_currency !== null
+        entry.offer_low_price !== null ||
+        entry.offer_high_price !== null ||
+        entry.offer_currency !== null
           ? {
               price_range: entry.price_range,
               low_price: entry.offer_low_price,
@@ -92,6 +104,6 @@ export const normalizeItem = (entry: ItemListEntry) => {
 
 export const buildResultItem = (entry: ItemListEntry): ResultItem => ({
   kind: "profile",
-  normalized: normalizeItem(entry),
+  normalized: buildProfile(entry),
   raw: entry.raw_item,
 })

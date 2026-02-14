@@ -14,20 +14,27 @@ const normalizeSpaces = (text: string): string =>
     .filter((part) => part.length > 0)
     .join(" ")
 
-const parseHeaderRating = (text: string): { ratingValue: number | null; ratingCount: number | null } => {
+interface HeaderRating {
+  ratingValue: number | null
+  ratingCount: number | null
+}
+
+const parseHeaderRating = (text: string): HeaderRating => {
   const normalized = normalizeSpaces(text)
   if (!normalized) {
     return { ratingValue: null, ratingCount: null }
   }
 
-  const match = /(?:^|\s)([0-5](?:[.,][0-9]+)?)\s*\(\s*([0-9][0-9 .,\u00a0]*)\s*\)(?=\s|$)/.exec(normalized)
+  const match = /(?:^|\s)([0-5](?:[.,][0-9]+)?)\s*\(\s*([0-9][0-9 .,\u00a0]*)\s*\)(?=\s|$)/.exec(
+    normalized,
+  )
   if (!match) {
     return { ratingValue: null, ratingCount: null }
   }
 
-  const ratingValueRaw = (match[1] ?? "").replaceAll(",", ".")
+  const ratingValueRaw = match[1].replaceAll(",", ".")
   const ratingValue = coerceFloat(ratingValueRaw)
-  const ratingCountRaw = (match[2] ?? "").replace(/[^0-9]/g, "")
+  const ratingCountRaw = match[2].replaceAll(/[^0-9]/g, "")
   const ratingCount = coerceInt(ratingCountRaw)
   if (ratingValue === null || ratingValue < 0 || ratingValue > 5 || ratingCount === null) {
     return { ratingValue: null, ratingCount: null }
@@ -35,7 +42,7 @@ const parseHeaderRating = (text: string): { ratingValue: number | null; ratingCo
   return { ratingValue, ratingCount }
 }
 
-const extractHeaderRating = (html: string): { ratingValue: number | null; ratingCount: number | null } => {
+const extractHeaderRating = (html: string): HeaderRating => {
   const $ = cheerio.load(html)
   const selectors = [".artist-card-extended__name", '[class*="artist-card-extended__name"]']
   for (const selector of selectors) {
@@ -52,7 +59,12 @@ const extractHeaderRating = (html: string): { ratingValue: number | null; rating
 }
 
 export const parseLinkabandProfilePage = (html: string): ParsedProfilePage => {
-  const parsed = parseGenericProfilePage(html, ["[data-testid='artist-description']", ".artist-description", ".description", "main"])
+  const parsed = parseGenericProfilePage(html, [
+    "[data-testid='artist-description']",
+    ".artist-description",
+    ".description",
+    "main",
+  ])
   const headerRating = extractHeaderRating(html)
   return {
     ...parsed,

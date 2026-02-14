@@ -1,5 +1,14 @@
-import { makeLocation, makeMedia, makeNormalizedResult, makePricing, makeRatings, makeSource, type ResultItem } from "../../schema/normalized.js"
+import {
+  makeLocation,
+  makeMedia,
+  makeNormalizedResult,
+  makePricing,
+  makeRatings,
+  makeSource,
+  type ResultItem,
+} from "../../schema/normalized.js"
 import { coerceFloat, coerceInt } from "../../utils/coerce.js"
+import { toRecordOrNull } from "../../utils/type-guards.js"
 
 interface ImageRef {
   url: string | null
@@ -7,22 +16,22 @@ interface ImageRef {
   url_bis: string | null
 }
 
-interface LowestPrestation {
+interface LowestService {
   amount_one_brut: number | null
   amount_full_ht: number | null
   amount_full_ttc: number | null
   duration: string | null
 }
 
-interface LowestFormation {
+interface LowestLineup {
   name: string | null
   description: string | null
   nb_membres: number | null
   material: string | null
-  lowest_prestation: LowestPrestation | null
+  lowest_prestation: LowestService | null
 }
 
-interface Localisation {
+interface ArtistLocation {
   city: string | null
   zipcode: string | null
   country: string | null
@@ -54,8 +63,8 @@ export interface ArtistProfile {
   abonnements_count: number | null
   profile_picture: ImageRef
   cover_pictures: ImageRef[]
-  localisation: Localisation
-  lowest_formation: LowestFormation | null
+  localisation: ArtistLocation
+  lowest_formation: LowestLineup | null
   styles: string[]
   players: string[]
   description: string | null
@@ -64,10 +73,10 @@ export interface ArtistProfile {
 }
 
 const imageFromObj = (obj: unknown): ImageRef => {
-  if (!obj || typeof obj !== "object") {
+  const record = toRecordOrNull(obj)
+  if (!record) {
     return { url: null, original: null, url_bis: null }
   }
-  const record = obj as Record<string, unknown>
   return {
     url: typeof record.url === "string" ? record.url : null,
     original: typeof record.original === "string" ? record.original : null,
@@ -75,11 +84,11 @@ const imageFromObj = (obj: unknown): ImageRef => {
   }
 }
 
-const lowestPrestationFromObj = (obj: unknown): LowestPrestation | null => {
-  if (!obj || typeof obj !== "object") {
+const lowestServiceFromObj = (obj: unknown): LowestService | null => {
+  const record = toRecordOrNull(obj)
+  if (!record) {
     return null
   }
-  const record = obj as Record<string, unknown>
   return {
     amount_one_brut: coerceFloat(record.amount_one_brut),
     amount_full_ht: coerceFloat(record.amount_full_ht),
@@ -88,25 +97,25 @@ const lowestPrestationFromObj = (obj: unknown): LowestPrestation | null => {
   }
 }
 
-const lowestFormationFromObj = (obj: unknown): LowestFormation | null => {
-  if (!obj || typeof obj !== "object") {
+const lowestLineupFromObj = (obj: unknown): LowestLineup | null => {
+  const record = toRecordOrNull(obj)
+  if (!record) {
     return null
   }
-  const record = obj as Record<string, unknown>
   return {
     name: typeof record.name === "string" ? record.name : null,
     description: typeof record.description === "string" ? record.description : null,
     nb_membres: coerceInt(record.nb_membres),
     material: typeof record.material === "string" ? record.material : null,
-    lowest_prestation: lowestPrestationFromObj(record.lowest_prestation),
+    lowest_prestation: lowestServiceFromObj(record.lowest_prestation),
   }
 }
 
-const localisationFromObj = (obj: unknown): Localisation => {
-  if (!obj || typeof obj !== "object") {
+const artistLocationFromObj = (obj: unknown): ArtistLocation => {
+  const record = toRecordOrNull(obj)
+  if (!record) {
     return { city: null, zipcode: null, country: null }
   }
-  const record = obj as Record<string, unknown>
   return {
     city: typeof record.city === "string" ? record.city : null,
     zipcode: typeof record.zipcode === "string" ? record.zipcode : null,
@@ -128,12 +137,21 @@ export const parseArtist = (raw: Record<string, unknown>): ArtistProfile => {
   const profileId = raw.id
   const name = raw.name
   const slug = raw.slug
-  if (typeof profileId !== "number" || !Number.isInteger(profileId) || typeof name !== "string" || typeof slug !== "string") {
+  if (
+    typeof profileId !== "number" ||
+    !Number.isInteger(profileId) ||
+    typeof name !== "string" ||
+    typeof slug !== "string"
+  ) {
     throw new Error("Artist id/name/slug missing")
   }
 
-  const styles = Array.isArray(raw.styles) ? raw.styles.filter((s): s is string => typeof s === "string") : []
-  const players = Array.isArray(raw.players) ? raw.players.filter((s): s is string => typeof s === "string") : []
+  const styles = Array.isArray(raw.styles)
+    ? raw.styles.filter((s): s is string => typeof s === "string")
+    : []
+  const players = Array.isArray(raw.players)
+    ? raw.players.filter((s): s is string => typeof s === "string")
+    : []
   const unavailabilities = Array.isArray(raw.unavailabilities) ? raw.unavailabilities : null
   const formations = Array.isArray(raw.formations) ? raw.formations : null
   const albums = Array.isArray(raw.albums) ? raw.albums : null
@@ -144,7 +162,8 @@ export const parseArtist = (raw: Record<string, unknown>): ArtistProfile => {
     name,
     slug,
     departement_name: typeof raw.departement_name === "string" ? raw.departement_name : null,
-    departement_zipcode: typeof raw.departement_zipcode === "string" ? raw.departement_zipcode : null,
+    departement_zipcode:
+      typeof raw.departement_zipcode === "string" ? raw.departement_zipcode : null,
     verified: typeof raw.verified === "boolean" ? raw.verified : null,
     global_rating: coerceFloat(raw.global_rating),
     avg_rating: coerceFloat(raw.avg_rating),
@@ -157,7 +176,8 @@ export const parseArtist = (raw: Record<string, unknown>): ArtistProfile => {
     need_onboarding: typeof raw.need_onboarding === "boolean" ? raw.need_onboarding : null,
     outdated_availabilities:
       typeof raw.outdated_availabilities === "boolean" ? raw.outdated_availabilities : null,
-    artiste_type_changed: typeof raw.artiste_type_changed === "boolean" ? raw.artiste_type_changed : null,
+    artiste_type_changed:
+      typeof raw.artiste_type_changed === "boolean" ? raw.artiste_type_changed : null,
     index_flag: typeof raw.index === "boolean" ? raw.index : null,
     last_update: typeof raw.last_update === "string" ? raw.last_update : null,
     unavailabilities_count: unavailabilities?.length ?? null,
@@ -166,8 +186,8 @@ export const parseArtist = (raw: Record<string, unknown>): ArtistProfile => {
     abonnements_count: abonnements?.length ?? null,
     profile_picture: imageFromObj(raw.profile_picture),
     cover_pictures: coverPicturesFromObj(raw.cover_picture ?? raw.cover_pictures),
-    localisation: localisationFromObj(raw.localisation),
-    lowest_formation: lowestFormationFromObj(raw.lowest_formation),
+    localisation: artistLocationFromObj(raw.localisation),
+    lowest_formation: lowestLineupFromObj(raw.lowest_formation),
     styles,
     players,
     description: typeof raw.description === "string" ? raw.description : null,
@@ -176,7 +196,7 @@ export const parseArtist = (raw: Record<string, unknown>): ArtistProfile => {
   }
 }
 
-const primaryPrice = (lowest: LowestPrestation | null): number | null =>
+const primaryPrice = (lowest: LowestService | null): number | null =>
   lowest?.amount_full_ttc ?? lowest?.amount_one_brut ?? lowest?.amount_full_ht ?? null
 
 const coverUrls = (covers: ImageRef[]): string[] => {
@@ -191,8 +211,11 @@ const coverUrls = (covers: ImageRef[]): string[] => {
   return urls
 }
 
-export const normalizeArtist = (artist: ArtistProfile) => {
-  const locationText = [artist.localisation.city, artist.localisation.country].filter((v): v is string => Boolean(v)).join(", ") || null
+export const buildProfile = (artist: ArtistProfile) => {
+  const locationText =
+    [artist.localisation.city, artist.localisation.country]
+      .filter((v): v is string => Boolean(v))
+      .join(", ") || null
   const lowest = artist.lowest_formation?.lowest_prestation ?? null
   const rawPrice =
     lowest === null
@@ -232,7 +255,10 @@ export const normalizeArtist = (artist: ArtistProfile) => {
     categories: artist.styles.length ? artist.styles : null,
     tags: artist.players.length ? artist.players : null,
     media: makeMedia({
-      image_url: artist.profile_picture.url ?? artist.profile_picture.original ?? artist.profile_picture.url_bis,
+      image_url:
+        artist.profile_picture.url ??
+        artist.profile_picture.original ??
+        artist.profile_picture.url_bis,
       cover_urls: coverUrls(artist.cover_pictures),
     }),
     source: makeSource({
@@ -275,6 +301,6 @@ export const normalizeArtist = (artist: ArtistProfile) => {
 
 export const buildResultItem = (artist: ArtistProfile): ResultItem => ({
   kind: "profile",
-  normalized: normalizeArtist(artist),
+  normalized: buildProfile(artist),
   raw: artist.raw,
 })

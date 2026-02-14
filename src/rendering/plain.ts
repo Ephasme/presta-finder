@@ -19,7 +19,11 @@ export class PlainRenderer implements CliRenderer {
   envTable(services: ServiceStatus[]): void {
     console.log("Service         Status")
     for (const service of services) {
-      const status = service.ready ? "ready" : service.required ? "missing (required)" : "not configured"
+      const status = service.ready
+        ? "ready"
+        : service.required
+          ? "missing (required)"
+          : "not configured"
       console.log(`${service.name.padEnd(15)} ${status}`)
     }
     console.log("")
@@ -50,7 +54,8 @@ export class PlainRenderer implements CliRenderer {
         const safeTotal = total > 0 ? total : 1
         const ratio = total > 0 ? current / total : 0
         const bucket = Math.floor(ratio * 10)
-        const shouldLog = force || current === 0 || (total > 0 && current >= total) || bucket !== lastBucket
+        const shouldLog =
+          force || current === 0 || (total > 0 && current >= total) || bucket !== lastBucket
 
         if (!shouldLog) {
           return

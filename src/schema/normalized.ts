@@ -1,7 +1,14 @@
 import { z } from "zod"
 
-export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
-  z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)]),
+export const jsonValueSchema: z.ZodType = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ]),
 )
 
 export const locationSchema = z
@@ -15,7 +22,7 @@ export const locationSchema = z
     latitude: z.number().nullable(),
     longitude: z.number().nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const ratingsSchema = z
   .object({
@@ -25,7 +32,7 @@ export const ratingsSchema = z
     worst: z.number().nullable(),
     average: z.number().nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const pricingSchema = z
   .object({
@@ -34,7 +41,7 @@ export const pricingSchema = z
     raw: jsonValueSchema.nullable(),
     currency: z.string().nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const mediaSchema = z
   .object({
@@ -43,7 +50,7 @@ export const mediaSchema = z
     gallery_urls: z.array(z.string()).nullable(),
     video_urls: z.array(z.string()).nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const sourceSchema = z
   .object({
@@ -53,13 +60,13 @@ export const sourceSchema = z
     index: z.string().nullable(),
     origin: z.string().nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const normalizedProfileSchema = z
   .object({
     website: z.string().min(1),
     kind: z.enum(["profile", "aggregation"]),
-    id: z.any(),
+    id: z.unknown(),
     name: z.string().nullable(),
     url: z.string().nullable(),
     slug: z.string().nullable(),
@@ -67,15 +74,15 @@ export const normalizedProfileSchema = z
     location: locationSchema,
     ratings: ratingsSchema,
     pricing: pricingSchema,
-    categories: z.array(z.any()).nullable(),
-    tags: z.array(z.any()).nullable(),
+    categories: z.array(z.unknown()).nullable(),
+    tags: z.array(z.unknown()).nullable(),
     media: mediaSchema,
     source: sourceSchema,
-    flags: z.record(z.string(), z.any()).nullable(),
-    metrics: z.record(z.string(), z.any()).nullable(),
-    attributes: z.record(z.string(), z.any()).nullable(),
+    flags: z.record(z.string(), z.unknown()).nullable(),
+    metrics: z.record(z.string(), z.unknown()).nullable(),
+    attributes: z.record(z.string(), z.unknown()).nullable(),
   })
-  .passthrough()
+  .loose()
 
 export const resultItemSchema = z.object({
   kind: z.enum(["profile", "aggregation", "unknown"]),

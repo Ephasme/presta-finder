@@ -6,7 +6,7 @@ export class CancellationError extends Error {
 }
 
 export const toCancellationError = (signal: AbortSignal): CancellationError => {
-  const reason = signal.reason
+  const reason: unknown = signal.reason
   if (reason instanceof Error) {
     return new CancellationError(reason.message)
   }

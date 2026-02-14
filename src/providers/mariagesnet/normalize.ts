@@ -1,5 +1,14 @@
-import { makeLocation, makeMedia, makeNormalizedResult, makePricing, makeRatings, makeSource, type ResultItem } from "../../schema/normalized.js"
+import {
+  makeLocation,
+  makeMedia,
+  makeNormalizedResult,
+  makePricing,
+  makeRatings,
+  makeSource,
+  type ResultItem,
+} from "../../schema/normalized.js"
 import { coerceFloat, coerceInt } from "../../utils/coerce.js"
+import { toRecordOrEmpty } from "../../utils/type-guards.js"
 
 export interface VendorProfile {
   vendor_id: string
@@ -34,19 +43,19 @@ export const parseVendor = (raw: Record<string, unknown>): VendorProfile => {
     description: typeof raw.description === "string" ? raw.description : null,
     rating: coerceFloat(raw.rating),
     reviews_count: coerceInt(raw.reviewsCount),
-    tile_attrs: raw.tileAttrs && typeof raw.tileAttrs === "object" ? (raw.tileAttrs as Record<string, unknown>) : {},
-    vendor_info:
-      raw.vendorInfo && typeof raw.vendorInfo === "object" ? (raw.vendorInfo as Record<string, unknown>) : {},
-    map_marker:
-      raw.mapMarker && typeof raw.mapMarker === "object" ? (raw.mapMarker as Record<string, unknown>) : {},
+    tile_attrs: toRecordOrEmpty(raw.tileAttrs),
+    vendor_info: toRecordOrEmpty(raw.vendorInfo),
+    map_marker: toRecordOrEmpty(raw.mapMarker),
     gallery: Array.isArray(raw.gallery)
-      ? raw.gallery.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+      ? raw.gallery.filter(
+          (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object",
+        )
       : [],
     starting_price: raw.startingPrice ?? null,
     starting_price_value: coerceFloat(raw.startingPriceValue),
     currency: typeof raw.currency === "string" ? raw.currency : null,
     sector: typeof raw.sector === "string" ? raw.sector : null,
-    address: raw.address && typeof raw.address === "object" ? (raw.address as Record<string, unknown>) : {},
+    address: toRecordOrEmpty(raw.address),
     raw,
   }
 }
@@ -76,7 +85,7 @@ const pickImage = (gallery: Record<string, unknown>[]): string | null => {
   return urls[0] ?? null
 }
 
-export const normalizeVendor = (vendor: VendorProfile) => {
+export const buildProfile = (vendor: VendorProfile) => {
   let locationText = vendor.location_text
   if (!locationText) {
     const parts = [vendor.address.city, vendor.address.region, vendor.address.country]
@@ -162,6 +171,6 @@ export const normalizeVendor = (vendor: VendorProfile) => {
 
 export const buildResultItem = (vendor: VendorProfile): ResultItem => ({
   kind: "profile",
-  normalized: normalizeVendor(vendor),
+  normalized: buildProfile(vendor),
   raw: vendor.raw,
 })

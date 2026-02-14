@@ -1,69 +1,45 @@
-import { readFile, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import type { AnyServiceProfile } from "../service-types/merged.js"
 
-import { type NormalizedProfile } from "../schema/normalized.js"
-import { SCHEMA_VERSION, extractProfilesFromResults, type ParsedOutput, validateParsedOutput } from "../schema/validate.js"
+/**
+ * Deduplication key for a service profile.
+ *
+ * Priority:
+ * 1. provider + providerId (if providerId is non-null)
+ * 2. provider + profileUrl (if providerId is null but profileUrl is non-null)
+ * 3. UUID (fallback to prevent silent data loss when both are null)
+ */
+const profileKey = (profile: AnyServiceProfile): string => {
+  if (profile.providerId !== null) {
+    return JSON.stringify([profile.provider, profile.providerId])
+  }
+  if (profile.profileUrl !== null) {
+    return JSON.stringify([profile.provider, "url", profile.profileUrl])
+  }
+  // Fallback: generate a unique key to preserve both profiles
+  return randomUUID()
+}
 
-const profileKey = (profile: NormalizedProfile): string =>
-  JSON.stringify([
-    profile.website ?? null,
-    profile.id ?? null,
-    profile.slug ?? null,
-    profile.url ?? null,
-    profile.name ?? null,
-  ])
-
-export const mergeProfiles = async (paths: string[]): Promise<NormalizedProfile[]> => {
-  const merged: NormalizedProfile[] = []
+/**
+ * Merge profiles from multiple providers, deduplicating by provider + providerId.
+ *
+ * Profiles with null providerId fall back to profileUrl for deduplication.
+ * If both are null, profiles are kept (UUID fallback prevents data loss).
+ */
+export const mergeProfiles = (profileArrays: AnyServiceProfile[][]): AnyServiceProfile[] => {
+  const merged: AnyServiceProfile[] = []
   const seen = new Set<string>()
 
-  for (const path of paths) {
-    try {
-      const content = await readFile(path, "utf-8")
-      const parsed = JSON.parse(content) as unknown
-      const profiles = extractProfilesFromResults(parsed)
-      for (const profile of profiles) {
-        const key = profileKey(profile)
-        if (seen.has(key)) {
-          continue
-        }
-        seen.add(key)
-        merged.push(profile)
+  for (const profiles of profileArrays) {
+    for (const profile of profiles) {
+      const key = profileKey(profile)
+      if (seen.has(key)) {
+        continue
       }
-    } catch {
-      continue
+      seen.add(key)
+      merged.push(profile)
     }
   }
+
   return merged
-}
-
-export const buildMergedOutput = (profiles: NormalizedProfile[]): ParsedOutput => {
-  const sources = Array.from(
-    new Set(
-      profiles
-        .map((profile) => profile.website)
-        .filter((website): website is string => typeof website === "string" && website.length > 0),
-    ),
-  ).sort()
-
-  return validateParsedOutput({
-    meta: {
-      website: "consolidated",
-      kind: "profiles",
-      count: profiles.length,
-      generatedAt: new Date().toISOString(),
-      schemaVersion: SCHEMA_VERSION,
-      sources,
-    },
-    results: profiles.map((profile) => ({
-      kind: "profile",
-      normalized: profile,
-      raw: null,
-    })),
-    raw: null,
-  })
-}
-
-export const writeMergedOutput = async (outputPath: string, profiles: NormalizedProfile[]): Promise<void> => {
-  const payload = buildMergedOutput(profiles)
-  await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8")
 }

@@ -6,7 +6,7 @@ export const scoreBreakdownItemSchema = z.object({
   justification: z.string().default(""),
 })
 
-export const djEvaluationSchema = z.object({
+export const evaluationSchema = z.object({
   score: z.number().int().min(0).max(100),
   verdict: z.enum(["yes", "maybe", "no"]),
   summary: z.string().default(""),
@@ -18,7 +18,7 @@ export const djEvaluationSchema = z.object({
   score_breakdown: z.array(scoreBreakdownItemSchema).default([]),
 })
 
-export type DjEvaluation = z.infer<typeof djEvaluationSchema>
+export type Evaluation = z.infer<typeof evaluationSchema>
 
 export interface ReportRecord {
   score: number
@@ -33,7 +33,7 @@ export interface ReportRecord {
   score_justifications?: Record<string, string>
 }
 
-export const toReportRecord = (evaluation: DjEvaluation): ReportRecord => {
+export const toReportRecord = (evaluation: Evaluation): ReportRecord => {
   const scoreBreakdown: Record<string, number> = {}
   const scoreJustifications: Record<string, string> = {}
   for (const item of evaluation.score_breakdown) {

@@ -139,11 +139,14 @@ export class InteractiveRenderer implements CliRenderer {
 
   pipelineComplete(elapsedSeconds: number, outputDir: string): void {
     console.log(
-      boxen(`${chalk.bold("Duration")}    ${elapsedSeconds}s\n${chalk.bold("Output")}      ${outputDir}`, {
-        title: chalk.green("Pipeline Complete"),
-        borderColor: "green",
-        padding: 1,
-      }),
+      boxen(
+        `${chalk.bold("Duration")}    ${elapsedSeconds}s\n${chalk.bold("Output")}      ${outputDir}`,
+        {
+          title: chalk.green("Pipeline Complete"),
+          borderColor: "green",
+          padding: 1,
+        },
+      ),
     )
   }
 
@@ -174,10 +177,10 @@ export class InteractiveRenderer implements CliRenderer {
           clearOnComplete: false,
           hideCursor: true,
           emptyOnZero: true,
-          format: (options, params, payload) => {
-            const provider = String(payload.provider ?? "")
-            const status = String(payload.status ?? "")
-            const phase = String(payload.phase ?? "listing")
+          format: (options, params, payload: Record<string, unknown>) => {
+            const provider = typeof payload.provider === "string" ? payload.provider : ""
+            const status = typeof payload.status === "string" ? payload.status : ""
+            const phase = typeof payload.phase === "string" ? payload.phase : "listing"
 
             if (phase !== "fetching") {
               // Listing / starting phase — no bar, just status text

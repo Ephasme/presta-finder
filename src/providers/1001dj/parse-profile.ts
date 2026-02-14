@@ -1,18 +1,27 @@
 import * as cheerio from "cheerio"
+import { z } from "zod"
 
 import { coerceFloat, coerceInt } from "../../utils/coerce.js"
+import { toRecordOrNull } from "../../utils/type-guards.js"
+
+const jsonLdBlobSchema = z.union([
+  z.record(z.string(), z.unknown()),
+  z.array(z.record(z.string(), z.unknown())),
+])
+
+export interface RatingPerformance {
+  coupDeCoeurPct: number | null
+  parfaitPct: number | null
+  ambianceDeFoliePct: number | null
+  topTierPct: number | null
+}
 
 export interface ProfilePageDetails {
   description: string | null
   imageUrl: string | null
   ratingValue: number | null
   ratingCount: number | null
-  ratingPerformance: {
-    coupDeCoeurPct: number | null
-    parfaitPct: number | null
-    ambianceDeFoliePct: number | null
-    topTierPct: number | null
-  } | null
+  ratingPerformance: RatingPerformance | null
   pricingMin: number | null
   pricingMax: number | null
   pricingCurrency: string | null
@@ -35,7 +44,11 @@ const parseJsonLdBlobs = ($: cheerio.CheerioAPI): unknown[] => {
       continue
     }
     try {
-      parsed.push(JSON.parse(text))
+      const raw: unknown = JSON.parse(text)
+      const validated = jsonLdBlobSchema.safeParse(raw)
+      if (validated.success) {
+        parsed.push(validated.data)
+      }
     } catch {
       continue
     }
@@ -53,10 +66,10 @@ const extractOfferLike = (value: unknown): OfferLike | null => {
   const queue: unknown[] = [value]
   while (queue.length > 0) {
     const current = queue.shift()
-    if (!current || typeof current !== "object") {
+    const record = toRecordOrNull(current)
+    if (!record) {
       continue
     }
-    const record = current as Record<string, unknown>
     const lowPrice = coerceFloat(record.lowPrice)
     const highPrice = coerceFloat(record.highPrice)
     const priceCurrency = typeof record.priceCurrency === "string" ? record.priceCurrency : null
@@ -112,7 +125,9 @@ const parseNumberToken = (token: string): number | null => {
 }
 
 const extractRatingCount = ($: cheerio.CheerioAPI): number | null => {
-  const explicitNodes = $('[aria-label*="avis"], [aria-label*="évaluation"], [aria-label*="evaluation"]')
+  const explicitNodes = $(
+    '[aria-label*="avis"], [aria-label*="évaluation"], [aria-label*="evaluation"]',
+  )
   for (const node of explicitNodes.toArray()) {
     const ariaLabel = $(node).attr("aria-label")
     if (!ariaLabel) {
@@ -125,7 +140,11 @@ const extractRatingCount = ($: cheerio.CheerioAPI): number | null => {
         continue
       }
       const lower = chunk.toLowerCase()
-      if (!lower.includes("avis") && !lower.includes("evaluation") && !lower.includes("évaluation")) {
+      if (
+        !lower.includes("avis") &&
+        !lower.includes("evaluation") &&
+        !lower.includes("évaluation")
+      ) {
         continue
       }
       const prev = chunks[i - 1]
@@ -146,7 +165,13 @@ const extractRatingCount = ($: cheerio.CheerioAPI): number | null => {
     .filter((token) => token.length > 0)
   for (let i = 1; i < bodyTokens.length; i += 1) {
     const token = bodyTokens[i]?.toLowerCase() ?? ""
-    if (token !== "avis" && token !== "évaluations" && token !== "evaluations" && token !== "évaluation" && token !== "evaluation") {
+    if (
+      token !== "avis" &&
+      token !== "évaluations" &&
+      token !== "evaluations" &&
+      token !== "évaluation" &&
+      token !== "evaluation"
+    ) {
       continue
     }
     const prev = bodyTokens[i - 1]
@@ -166,8 +191,8 @@ const normalizeKey = (value: string): string =>
     .toLowerCase()
     .replaceAll("œ", "oe")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9 ]+/g, " ")
+    .replaceAll(/[\u0300-\u036f]/g, "")
+    .replaceAll(/[^a-z0-9 ]+/g, " ")
     .split(" ")
     .map((part) => part.trim())
     .filter((part) => part.length > 0)
@@ -185,14 +210,14 @@ const parsePercentToken = (token: string): number | null => {
 
 const round2 = (value: number): number => Math.round(value * 100) / 100
 
-const extractRatingPerformance = ($: cheerio.CheerioAPI): ProfilePageDetails["ratingPerformance"] => {
+const extractRatingPerformance = ($: cheerio.CheerioAPI): RatingPerformance | null => {
   const block = $(".list-rating, [class*='list-rating']").first()
   if (block.length === 0) {
     return null
   }
 
   const text = block.text().replaceAll("\n", " ").replaceAll("\t", " ").replaceAll("\r", " ")
-  const regex = /([A-Za-zÀ-ÿ0-9'’ \-]+?)\s+((?:-\s*de\s*)?[0-9]+(?:[.,][0-9]+)?)\s*%/g
+  const regex = /([A-Za-zÀ-ÿ0-9'’ -]+?)\s+((?:-\s*de\s*)?[0-9]+(?:[.,][0-9]+)?)\s*%/g
   const metrics = new Map<string, number>()
   for (const match of text.matchAll(regex)) {
     const labelRaw = match[1]
@@ -224,10 +249,7 @@ const extractRatingPerformance = ($: cheerio.CheerioAPI): ProfilePageDetails["ra
   const coupDeCoeurPct = pick(["Coup de coeur", "Coup de cœur"])
   const parfaitPct = pick(["Parfait"])
   const ambianceDeFoliePct = pick(["Ambiance de folie"])
-  const topTierPctRaw =
-    (coupDeCoeurPct ?? 0) +
-    (parfaitPct ?? 0) +
-    (ambianceDeFoliePct ?? 0)
+  const topTierPctRaw = (coupDeCoeurPct ?? 0) + (parfaitPct ?? 0) + (ambianceDeFoliePct ?? 0)
   const topTierPct = topTierPctRaw > 0 ? round2(topTierPctRaw) : null
 
   return {

@@ -1,12 +1,21 @@
 import * as cheerio from "cheerio"
+import { z } from "zod"
 
 import { type ParsedOutput, SCHEMA_VERSION, validateParsedOutput } from "../../schema/validate.js"
 import { coerceFloat, coerceInt } from "../../utils/coerce.js"
+import { toRecordOrEmpty, toRecordOrNull } from "../../utils/type-guards.js"
 import { buildResultItem, type ItemListEntry } from "./normalize.js"
+
+const itemListLdSchema = z
+  .object({
+    "@type": z.literal("ItemList"),
+    itemListElement: z.array(z.record(z.string(), z.unknown())),
+  })
+  .loose()
 
 const parseProfileIdFromUrl = (url: string): number | null => {
   const match = /\/profil-dj-(\d+)-/.exec(url)
-  return match ? Number.parseInt(match[1] ?? "", 10) : null
+  return match ? Number.parseInt(match[1], 10) : null
 }
 
 const coerceArray = (value: unknown): unknown[] => {
@@ -16,13 +25,17 @@ const coerceArray = (value: unknown): unknown[] => {
   return value === null || value === undefined ? [] : [value]
 }
 
-const extractOffers = (
-  value: unknown,
-): { lowPrice: number | null; highPrice: number | null; priceCurrency: string | null } => {
-  const offerCandidates = coerceArray(value).filter(
+interface ParsedOfferPriceRange {
+  lowPrice: number | null
+  highPrice: number | null
+  priceCurrency: string | null
+}
+
+const extractOffers = (value: unknown): ParsedOfferPriceRange => {
+  const offerCandidate = coerceArray(value).find(
     (entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object",
   )
-  const offer = offerCandidates[0]
+  const offer = offerCandidate
   if (!offer) {
     return { lowPrice: null, highPrice: null, priceCurrency: null }
   }
@@ -36,30 +49,26 @@ const extractOffers = (
 const normalizeItemListEntries = (itemListElement: unknown[]): ItemListEntry[] => {
   const out: ItemListEntry[] = []
   for (const li of itemListElement) {
-    if (!li || typeof li !== "object") {
+    const liRecord = toRecordOrNull(li)
+    if (!liRecord) {
       continue
     }
-    const itemObj = (li as Record<string, unknown>).item
-    if (!itemObj || typeof itemObj !== "object") {
+    const item = toRecordOrNull(liRecord.item)
+    if (!item) {
       continue
     }
-    const item = itemObj as Record<string, unknown>
     const url = item.url
     if (typeof url !== "string" || !url) {
       continue
     }
 
-    const image = item.image && typeof item.image === "object" ? (item.image as Record<string, unknown>) : {}
-    const geo = item.geo && typeof item.geo === "object" ? (item.geo as Record<string, unknown>) : {}
-    const address =
-      item.address && typeof item.address === "object" ? (item.address as Record<string, unknown>) : {}
-    const agg =
-      item.aggregateRating && typeof item.aggregateRating === "object"
-        ? (item.aggregateRating as Record<string, unknown>)
-        : {}
+    const image = toRecordOrEmpty(item.image)
+    const geo = toRecordOrEmpty(item.geo)
+    const address = toRecordOrEmpty(item.address)
+    const agg = toRecordOrEmpty(item.aggregateRating)
     const offers = extractOffers(item.offers)
 
-    const position = coerceInt((li as Record<string, unknown>).position)
+    const position = coerceInt(liRecord.position)
 
     out.push({
       position,
@@ -74,7 +83,8 @@ const normalizeItemListEntries = (itemListElement: unknown[]): ItemListEntry[] =
       latitude: coerceFloat(geo.latitude),
       longitude: coerceFloat(geo.longitude),
       street_address: typeof address.streetAddress === "string" ? address.streetAddress : null,
-      address_locality: typeof address.addressLocality === "string" ? address.addressLocality : null,
+      address_locality:
+        typeof address.addressLocality === "string" ? address.addressLocality : null,
       postal_code: typeof address.postalCode === "string" ? address.postalCode : null,
       address_region: typeof address.addressRegion === "string" ? address.addressRegion : null,
       address_country: typeof address.addressCountry === "string" ? address.addressCountry : null,
@@ -83,7 +93,7 @@ const normalizeItemListEntries = (itemListElement: unknown[]): ItemListEntry[] =
       worst_rating: coerceFloat(agg.worstRating),
       best_rating: coerceFloat(agg.bestRating),
       source: "jsonld",
-      raw_item: item as Record<string, unknown>,
+      raw_item: item,
     })
   }
   return out
@@ -105,14 +115,11 @@ export const extractProfilesFromHtml = (html: string): ItemListEntry[] => {
       continue
     }
     for (const obj of coerceArray(parsed)) {
-      if (!obj || typeof obj !== "object") {
+      const itemListParsed = itemListLdSchema.safeParse(obj)
+      if (!itemListParsed.success) {
         continue
       }
-      const record = obj as Record<string, unknown>
-      if (record["@type"] !== "ItemList" || !Array.isArray(record.itemListElement)) {
-        continue
-      }
-      const normalized = normalizeItemListEntries(record.itemListElement)
+      const normalized = normalizeItemListEntries(itemListParsed.data.itemListElement)
       if (normalized.length > 0) {
         return normalized
       }
@@ -160,7 +167,7 @@ export const extractProfilesFromHtml = (html: string): ItemListEntry[] => {
   return fallback
 }
 
-export const parseProfileList = (pages: string[]): ParsedOutput => {
+export const parseListingPages = (pages: string[]): ItemListEntry[] => {
   const entries: ItemListEntry[] = []
   const seen = new Set<string>()
 
@@ -175,6 +182,12 @@ export const parseProfileList = (pages: string[]): ParsedOutput => {
     }
   }
 
+  return entries
+}
+
+export const parseProfileList = (pages: string[]): ParsedOutput => {
+  const entries = parseListingPages(pages)
+
   return validateParsedOutput({
     meta: {
       website: "1001dj",
@@ -185,6 +198,8 @@ export const parseProfileList = (pages: string[]): ParsedOutput => {
       schemaVersion: SCHEMA_VERSION,
     },
     results: entries.map(buildResultItem),
-    raw: null,
+    raw: {
+      listingPagesHtml: pages,
+    },
   })
 }

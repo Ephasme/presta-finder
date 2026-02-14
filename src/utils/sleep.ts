@@ -14,7 +14,7 @@ export const sleep = async (ms: number, signal?: AbortSignal): Promise<void> => 
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort)
-      resolve(undefined)
+      resolve()
     }, ms)
     const onAbort = () => {
       clearTimeout(timer)

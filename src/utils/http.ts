@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises"
+import { z } from "zod"
 
 export type HttpHeaders = Record<string, string>
 
@@ -7,6 +8,8 @@ export interface HttpResponse<TBody> {
   contentType: string
   body: TBody
 }
+
+const recordSchema = z.record(z.string(), z.unknown())
 
 const withTimeoutSignal = (timeoutMs: number, signal?: AbortSignal): AbortSignal => {
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
@@ -25,27 +28,36 @@ export const mergeHeaders = (
     if (value === null || value === undefined) {
       continue
     }
-    merged[String(key)] = String(value)
+    if (typeof value === "string") {
+      merged[key] = value
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      merged[key] = value.toString()
+    } else {
+      merged[key] = JSON.stringify(value)
+    }
   }
   return merged
 }
 
-export const parseJsonArg = async (value: string | null | undefined): Promise<Record<string, unknown>> => {
+export const parseJsonArg = async (
+  value: string | null | undefined,
+): Promise<Record<string, unknown>> => {
   if (!value) {
     return {}
   }
-  let parsed: unknown
+  let raw: unknown
   if (value.startsWith("@")) {
     const path = value.slice(1)
     const content = await readFile(path, "utf-8")
-    parsed = JSON.parse(content)
+    raw = JSON.parse(content)
   } else {
-    parsed = JSON.parse(value)
+    raw = JSON.parse(value)
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+  const parsed = recordSchema.safeParse(raw)
+  if (!parsed.success) {
     throw new Error("JSON argument must be an object")
   }
-  return parsed as Record<string, unknown>
+  return parsed.data
 }
 
 const readResponseText = async (response: Response): Promise<HttpResponse<string>> => ({
@@ -71,12 +83,12 @@ export const httpGetText = async (
   return readResponseText(response)
 }
 
-export const httpGetJson = async <T = unknown>(
+export const httpGetJson = async (
   url: string,
   timeoutMs: number,
   headers: HttpHeaders,
   signal?: AbortSignal,
-): Promise<HttpResponse<T>> => {
+): Promise<HttpResponse<unknown>> => {
   const response = await fetch(url, {
     method: "GET",
     headers,
@@ -86,19 +98,20 @@ export const httpGetJson = async <T = unknown>(
     throw new Error(`HTTP ${response.status} on GET ${url}`)
   }
   const textResp = await readResponseText(response)
+  const parsedBody: unknown = JSON.parse(textResp.body)
   return {
     ...textResp,
-    body: JSON.parse(textResp.body) as T,
+    body: parsedBody,
   }
 }
 
-export const httpPostJson = async <TResponse = unknown>(
+export const httpPostJson = async (
   url: string,
   body: unknown,
   timeoutMs: number,
   headers: HttpHeaders,
   signal?: AbortSignal,
-): Promise<HttpResponse<TResponse>> => {
+): Promise<HttpResponse<unknown>> => {
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -111,11 +124,12 @@ export const httpPostJson = async <TResponse = unknown>(
 
   const textResp = await readResponseText(response)
   if (!response.ok) {
-    const snippet = textResp.body.replace(/\s+/g, " ").slice(0, 200)
+    const snippet = textResp.body.replaceAll(/\s+/g, " ").slice(0, 200)
     throw new Error(`HTTP ${response.status} on POST ${url}: ${snippet}`)
   }
+  const parsedBody: unknown = JSON.parse(textResp.body)
   return {
     ...textResp,
-    body: JSON.parse(textResp.body) as TResponse,
+    body: parsedBody,
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { parseUser, normalizeUser } from "../../../src/providers/livetonight/normalize.js"
+import { parseUser, buildProfile } from "../../../src/providers/livetonight/normalize.js"
 
 describe("livetonight normalize", () => {
   it("normalizes user record", () => {
@@ -13,7 +13,7 @@ describe("livetonight normalize", () => {
       musician_reviews_count: 24,
       categories: ["DJ"],
     })
-    const normalized = normalizeUser(user)
+    const normalized = buildProfile(user)
     expect(normalized.website).toBe("livetonight")
     expect(normalized.name).toBe("LT DJ")
     expect(normalized.location.country).toBe("France")

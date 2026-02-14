@@ -1,17 +1,41 @@
 import * as cheerio from "cheerio"
+import { z } from "zod"
 
 import { SCHEMA_VERSION, type ParsedOutput, validateParsedOutput } from "../../schema/validate.js"
-import { buildResultItem, parseVendor } from "./normalize.js"
+import { isRecord, toRecordOrEmpty, toRecordOrNull } from "../../utils/type-guards.js"
+import { buildResultItem, parseVendor, type VendorProfile } from "./normalize.js"
+
+const vendorInfoSchema = z.record(z.string(), z.unknown())
+
+const harEntrySchema = z
+  .object({
+    request: z.object({ url: z.string() }).loose(),
+    response: z
+      .object({
+        content: z.object({ text: z.string() }).loose().optional(),
+      })
+      .loose(),
+  })
+  .loose()
+
+const harLogSchema = z
+  .object({
+    entries: z.array(harEntrySchema),
+  })
+  .loose()
+
+const mariagesnetSearchResponseSchema = z.record(z.string(), z.unknown())
 
 const parseDoubleEncodedJson = (value: unknown): unknown => {
   if (typeof value !== "string") {
     return value
   }
   try {
-    const first = JSON.parse(value) as unknown
+    const first: unknown = JSON.parse(value)
     if (typeof first === "string") {
       try {
-        return JSON.parse(first) as unknown
+        const inner: unknown = JSON.parse(first)
+        return inner
       } catch {
         return first
       }
@@ -26,27 +50,33 @@ const parsePriceToFloat = (value: unknown): number | null => {
   if (value === null || value === undefined) {
     return null
   }
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null
+  }
   let text = String(value).trim()
   if (!text) {
     return null
   }
-  text = text.replace(/\u00a0/g, " ").replace(/€/g, "").trim()
-  text = text.replace(/[^0-9,.\- ]+/g, "").trim().replace(/ /g, "")
+  text = text.replaceAll("\u00a0", " ").replaceAll("€", "").trim()
+  text = text
+    .replaceAll(/[^0-9,.\- ]+/g, "")
+    .trim()
+    .replaceAll(" ", "")
   if (text.includes(",") && text.includes(".")) {
     const lastComma = text.lastIndexOf(",")
     const lastDot = text.lastIndexOf(".")
     if (lastDot > lastComma) {
-      text = text.replace(/,/g, "")
+      text = text.replaceAll(",", "")
     } else {
-      text = text.replace(/\./g, "").replace(",", ".")
+      text = text.replaceAll(".", "").replace(",", ".")
     }
   } else if (text.includes(".")) {
     if (/^-?\d{1,3}(?:\.\d{3})+$/.test(text)) {
-      text = text.replace(/\./g, "")
+      text = text.replaceAll(".", "")
     }
   } else if (text.includes(",")) {
     if (/^-?\d{1,3}(?:,\d{3})+$/.test(text)) {
-      text = text.replace(/,/g, "")
+      text = text.replaceAll(",", "")
     } else {
       text = text.replace(",", ".")
     }
@@ -55,7 +85,12 @@ const parsePriceToFloat = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-const extractRatingAndReviews = (ariaLabel: string): { rating: number | null; reviews: number | null } => {
+interface RatingAndReviews {
+  rating: number | null
+  reviews: number | null
+}
+
+const extractRatingAndReviews = (ariaLabel: string): RatingAndReviews => {
   const normalized = ariaLabel
     .replaceAll(",", ".")
     .replaceAll("\u00a0", " ")
@@ -108,12 +143,12 @@ interface Tile {
   vendorInfo: Record<string, unknown> | null
 }
 
-const parseVendorTiles = (listingResultsHtml: unknown): Record<string, Tile> => {
+const parseVendorTiles = (listingResultsHtml: unknown): Partial<Record<string, Tile>> => {
   if (typeof listingResultsHtml !== "string" || !listingResultsHtml.length) {
     return {}
   }
   const $ = cheerio.load(listingResultsHtml)
-  const out: Record<string, Tile> = {}
+  const out: Partial<Record<string, Tile>> = {}
 
   $("li[data-vendor-id]").each((_idx, el) => {
     const vendorId = $(el).attr("data-vendor-id")?.trim()
@@ -122,7 +157,7 @@ const parseVendorTiles = (listingResultsHtml: unknown): Record<string, Tile> => 
     }
 
     const tileAttrs: Record<string, string> = {}
-    for (const [key, value] of Object.entries(el.attribs ?? {})) {
+    for (const [key, value] of Object.entries(el.attribs)) {
       if (typeof value === "string") {
         tileAttrs[key] = value
       }
@@ -151,9 +186,10 @@ const parseVendorTiles = (listingResultsHtml: unknown): Record<string, Tile> => 
     let vendorInfo: Record<string, unknown> | null = null
     if (vendorInfoRaw) {
       try {
-        const parsedInfo = JSON.parse(vendorInfoRaw) as unknown
-        if (parsedInfo && typeof parsedInfo === "object" && !Array.isArray(parsedInfo)) {
-          vendorInfo = parsedInfo as Record<string, unknown>
+        const jsonValue: unknown = JSON.parse(vendorInfoRaw)
+        const parsed = vendorInfoSchema.safeParse(jsonValue)
+        if (parsed.success) {
+          vendorInfo = parsed.data
         }
       } catch {
         vendorInfo = null
@@ -176,31 +212,32 @@ const parseVendorTiles = (listingResultsHtml: unknown): Record<string, Tile> => 
   return out
 }
 
-const groupMarkersById = (mapMarkers: unknown): Record<string, Record<string, unknown>> => {
+const groupMarkersById = (
+  mapMarkers: unknown,
+): Partial<Record<string, Record<string, unknown>>> => {
   const decoded = parseDoubleEncodedJson(mapMarkers)
   if (!Array.isArray(decoded)) {
     return {}
   }
-  const groups: Record<string, Record<string, unknown>> = {}
+  const groups: Partial<Record<string, Record<string, unknown>>> = {}
   for (const item of decoded) {
-    if (!item || typeof item !== "object") {
+    if (!isRecord(item)) {
       continue
     }
-    const record = item as Record<string, unknown>
-    const vendorId = record.vendorId
+    const vendorId = item.vendorId
     if (typeof vendorId === "string" && vendorId.length > 0) {
-      groups[vendorId] = record
+      groups[vendorId] = item
     }
   }
   return groups
 }
 
-const groupGalleryById = (gallery: unknown): Record<string, Record<string, unknown>[]> => {
-  if (!gallery || typeof gallery !== "object" || Array.isArray(gallery)) {
+const groupGalleryById = (gallery: unknown): Partial<Record<string, Record<string, unknown>[]>> => {
+  if (!isRecord(gallery)) {
     return {}
   }
-  const groups: Record<string, Record<string, unknown>[]> = {}
-  for (const [vendorId, rawItems] of Object.entries(gallery as Record<string, unknown>)) {
+  const groups: Partial<Record<string, Record<string, unknown>[]>> = {}
+  for (const [vendorId, rawItems] of Object.entries(gallery)) {
     if (!Array.isArray(rawItems)) {
       continue
     }
@@ -226,43 +263,38 @@ const extractVendors = (obj: Record<string, unknown>): Record<string, unknown>[]
 
   for (const vendorId of vendorIds) {
     const tile = tilesById[vendorId]
+    if (!tile) {
+      continue
+    }
     const marker = markersById[vendorId]
     const gallery = galleryById[vendorId]
 
     const record: Record<string, unknown> = { vendorId }
-    if (tile) {
-      record.name = tile.name
-      record.storefrontUrl = tile.storefrontUrl
-      record.locationText = tile.locationText
-      record.description = tile.description
-      record.rating = tile.rating
-      record.reviewsCount = tile.reviewsCount
-      record.tileAttrs = tile.tileAttrs
-      record.vendorInfo = tile.vendorInfo
-    }
+    record.name = tile.name
+    record.storefrontUrl = tile.storefrontUrl
+    record.locationText = tile.locationText
+    record.description = tile.description
+    record.rating = tile.rating
+    record.reviewsCount = tile.reviewsCount
+    record.tileAttrs = tile.tileAttrs
+    record.vendorInfo = tile.vendorInfo
     if (marker) {
       record.mapMarker = marker
-      if ((record.rating === null || record.rating === undefined) && marker.averageRating !== undefined) {
-        record.rating = parsePriceToFloat(marker.averageRating)
-      }
+    }
+    if (record.rating === null && marker && marker.averageRating !== undefined) {
+      record.rating = parsePriceToFloat(marker.averageRating)
     }
     if (gallery) {
       record.gallery = gallery
     }
 
-    const vendorInfo =
-      record.vendorInfo && typeof record.vendorInfo === "object"
-        ? (record.vendorInfo as Record<string, unknown>)
-        : null
+    const vendorInfo = toRecordOrNull(record.vendorInfo)
     if (vendorInfo) {
       record.startingPrice = vendorInfo.price ?? null
       record.startingPriceValue = parsePriceToFloat(vendorInfo.price ?? null)
       record.currency = typeof vendorInfo.currency === "string" ? vendorInfo.currency : null
       record.sector = typeof vendorInfo.sector === "string" ? vendorInfo.sector : null
-      record.address =
-        vendorInfo.address && typeof vendorInfo.address === "object"
-          ? (vendorInfo.address as Record<string, unknown>)
-          : {}
+      record.address = toRecordOrEmpty(vendorInfo.address)
     }
     vendors.push(record)
   }
@@ -272,52 +304,71 @@ const extractVendors = (obj: Record<string, unknown>): Record<string, unknown>[]
 
 const dataToResponses = (data: unknown): Record<string, unknown>[] => {
   if (Array.isArray(data)) {
-    return data.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    return data.filter(
+      (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object",
+    )
   }
-  if (!data || typeof data !== "object") {
+  if (!isRecord(data)) {
     throw new Error("Unsupported JSON shape for Mariages.net parser")
   }
-  const record = data as Record<string, unknown>
 
-  const maybeLog = record.log
-  if (maybeLog && typeof maybeLog === "object") {
-    const entries = (maybeLog as Record<string, unknown>).entries
-    if (Array.isArray(entries)) {
-      const responses: Record<string, unknown>[] = []
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object") {
+  const harParsed = harLogSchema.safeParse(data.log)
+  if (harParsed.success && harParsed.data.entries.length > 0) {
+    const responses: Record<string, unknown>[] = []
+    for (const entry of harParsed.data.entries) {
+      const url = entry.request.url
+      if (typeof url !== "string" || !url.includes("search-filters.php")) {
+        continue
+      }
+      const text = entry.response.content?.text
+      if (typeof text !== "string" || !text.trim()) {
+        continue
+      }
+      try {
+        const jsonValue: unknown = JSON.parse(text)
+        const parsed = mariagesnetSearchResponseSchema.safeParse(jsonValue)
+        if (parsed.success) {
+          responses.push(parsed.data)
+        }
+      } catch {
+        continue
+      }
+    }
+    if (responses.length > 0) {
+      return responses
+    }
+    throw new Error("HAR detected but no Mariages.net search-filters response found")
+  }
+  return [data]
+}
+
+export const parseListingPages = (responses: unknown[]): VendorProfile[] => {
+  const seen = new Set<string>()
+  const vendors: VendorProfile[] = []
+
+  for (const response of responses) {
+    const responsesArray = dataToResponses(response)
+    for (const resp of responsesArray) {
+      for (const rawVendor of extractVendors(resp)) {
+        const vendorId = rawVendor.vendorId
+        if (typeof vendorId === "string" && seen.has(vendorId)) {
           continue
         }
-        const req = (entry as Record<string, unknown>).request
-        const res = (entry as Record<string, unknown>).response
-        if (!req || typeof req !== "object" || !res || typeof res !== "object") {
-          continue
+        if (typeof vendorId === "string") {
+          seen.add(vendorId)
         }
-        const url = (req as Record<string, unknown>).url
-        if (typeof url !== "string" || !url.includes("search-filters.php")) {
-          continue
-        }
-        const content = (res as Record<string, unknown>).content
-        const text = content && typeof content === "object" ? (content as Record<string, unknown>).text : null
-        if (typeof text !== "string" || !text.trim()) {
-          continue
-        }
+
         try {
-          const parsed = JSON.parse(text) as unknown
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            responses.push(parsed as Record<string, unknown>)
-          }
+          vendors.push(parseVendor(rawVendor))
         } catch {
+          // Skip vendors that fail to parse
           continue
         }
       }
-      if (responses.length > 0) {
-        return responses
-      }
-      throw new Error("HAR detected but no Mariages.net search-filters response found")
     }
   }
-  return [record]
+
+  return vendors
 }
 
 export const parseMariagesnet = (data: unknown): ParsedOutput => {
@@ -357,6 +408,8 @@ export const parseMariagesnet = (data: unknown): ParsedOutput => {
       schemaVersion: SCHEMA_VERSION,
     },
     results: parsedVendors.map(buildResultItem),
-    raw: null,
+    raw: {
+      responses,
+    },
   })
 }

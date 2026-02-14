@@ -31,11 +31,11 @@ describe("1001dj parse list", () => {
     `
     const parsed = parseProfileList([html])
     expect(parsed.meta.count).toBe(1)
-    const profile = parsed.results[0]?.normalized
-    expect(profile?.name).toBe("Demo DJ")
-    expect(profile?.pricing.min).toBe(500)
-    expect(profile?.pricing.max).toBe(1200)
-    expect(profile?.pricing.currency).toBe("EUR")
+    const profile = parsed.results[0].normalized
+    expect(profile.name).toBe("Demo DJ")
+    expect(profile.pricing.min).toBe(500)
+    expect(profile.pricing.max).toBe(1200)
+    expect(profile.pricing.currency).toBe("EUR")
   })
 
   it("parses localized rating values from JSON-LD", () => {
@@ -62,8 +62,8 @@ describe("1001dj parse list", () => {
       </head><body></body></html>
     `
     const parsed = parseProfileList([html])
-    const profile = parsed.results[0]?.normalized
-    expect(profile?.ratings.value).toBe(4.9)
-    expect(profile?.ratings.count).toBe(37)
+    const profile = parsed.results[0].normalized
+    expect(profile.ratings.value).toBe(4.9)
+    expect(profile.ratings.count).toBe(37)
   })
 })

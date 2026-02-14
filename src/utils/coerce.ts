@@ -9,7 +9,7 @@ export const coerceInt = (value: unknown): number | null => {
 }
 
 const normalizeFloatString = (value: string): string | null => {
-  const compact = value.replace(/[\s\u00a0\u202f]/g, "").trim()
+  const compact = value.replaceAll(/[\s\u00a0\u202f]/g, "").trim()
   if (!compact || !/^[+-]?[0-9][0-9.,]*$/.test(compact)) {
     return null
   }

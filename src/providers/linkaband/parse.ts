@@ -1,20 +1,27 @@
+import { z } from "zod"
+
 import { SCHEMA_VERSION, type ParsedOutput, validateParsedOutput } from "../../schema/validate.js"
 import { buildResultItem, parseArtist } from "./normalize.js"
 
+const linkabandArtistsPayloadSchema = z.union([
+  z.array(z.record(z.string(), z.unknown())),
+  z.object({ artists: z.array(z.record(z.string(), z.unknown())) }).loose(),
+])
+
 const extractArtists = (payload: unknown): Record<string, unknown>[] => {
-  if (Array.isArray(payload)) {
-    return payload.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+  const parsed = linkabandArtistsPayloadSchema.safeParse(payload)
+  if (!parsed.success) {
+    return []
   }
-  if (payload && typeof payload === "object") {
-    const artists = (payload as Record<string, unknown>).artists
-    if (Array.isArray(artists)) {
-      return artists.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
-    }
+  if (Array.isArray(parsed.data)) {
+    return parsed.data
   }
-  return []
+  return parsed.data.artists
 }
 
-export const parseLinkaband = (payload: unknown): ParsedOutput => {
+export const parseListingProfiles = (
+  payload: unknown,
+): import("./normalize.js").ArtistProfile[] => {
   const artistsRaw = extractArtists(payload)
   const artists = artistsRaw.flatMap((item) => {
     try {
@@ -23,6 +30,11 @@ export const parseLinkaband = (payload: unknown): ParsedOutput => {
       return []
     }
   })
+  return artists
+}
+
+export const parseLinkaband = (payload: unknown): ParsedOutput => {
+  const artists = parseListingProfiles(payload)
 
   return validateParsedOutput({
     meta: {
@@ -33,6 +45,6 @@ export const parseLinkaband = (payload: unknown): ParsedOutput => {
       schemaVersion: SCHEMA_VERSION,
     },
     results: artists.map(buildResultItem),
-    raw: null,
+    raw: payload,
   })
 }

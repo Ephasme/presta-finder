@@ -1,34 +1,138 @@
-import { SCHEMA_VERSION, type ParsedOutput, validateParsedOutput } from "../../schema/validate.js"
-import { buildAggregationItem, buildProfileItem, parseAggregations, parseUser } from "./normalize.js"
+import { z } from "zod"
 
-const extractUsersProfiles = (obj: Record<string, unknown>): Record<string, unknown>[] => {
-  const final = obj.final
-  if (!final || typeof final !== "object") {
-    return []
-  }
-  const body = (final as Record<string, unknown>).body
-  if (!body || typeof body !== "object") {
-    return []
-  }
-  const hits = (body as Record<string, unknown>).hits
-  if (!hits || typeof hits !== "object") {
-    return []
-  }
-  const hitList = (hits as Record<string, unknown>).hits
-  if (!Array.isArray(hitList)) {
-    return []
-  }
+import { SCHEMA_VERSION, type ParsedOutput, validateParsedOutput } from "../../schema/validate.js"
+import { isRecord } from "../../utils/type-guards.js"
+import {
+  buildAggregationItem,
+  buildProfileItem,
+  parseAggregations,
+  parseUser,
+  type UserProfile,
+} from "./normalize.js"
+
+const searchValuesSchema = z
+  .object({
+    date: z.string().optional(),
+    address: z.string().optional(),
+    lat: z.union([z.number(), z.string()]).optional(),
+    lng: z.union([z.number(), z.string()]).optional(),
+    categories: z.array(z.string()).optional(),
+    types: z.array(z.string()).optional(),
+    titles: z.array(z.string()).optional(),
+    page: z.number().optional(),
+    budget: z.union([z.tuple([z.number(), z.number()]), z.null()]).optional(),
+    sortedBy: z.string().optional(),
+    radius: z.number().optional(),
+    term: z.string().optional(),
+    timestamp: z.number().optional(),
+    index: z.string().optional(),
+    onboarding: z.array(z.string()).optional(),
+    users: z.array(z.string()).optional(),
+    dj: z.array(z.string()).optional(),
+  })
+  .loose()
+
+const elasticShardsSchema = z
+  .object({
+    total: z.number(),
+    successful: z.number(),
+    skipped: z.number(),
+    failed: z.number(),
+  })
+  .loose()
+
+const elasticHitTotalSchema = z
+  .object({
+    value: z.number(),
+    relation: z.string(),
+  })
+  .loose()
+
+const elasticHitSchema = z
+  .object({
+    _index: z.string(),
+    _type: z.string(),
+    _id: z.string(),
+    _score: z.number().nullable(),
+    _source: z.record(z.string(), z.unknown()).optional(),
+    sort: z.array(z.number()).optional(),
+  })
+  .loose()
+
+const livetonightSearchResponseSchema = z
+  .object({
+    final: z
+      .object({
+        body: z
+          .object({
+            took: z.number().optional(),
+            timed_out: z.boolean().optional(),
+            _shards: elasticShardsSchema.optional(),
+            hits: z
+              .object({
+                total: elasticHitTotalSchema.optional(),
+                max_score: z.number().nullable().optional(),
+                hits: z.array(elasticHitSchema),
+              })
+              .loose(),
+          })
+          .loose(),
+        values: searchValuesSchema.optional(),
+        query: z.record(z.string(), z.string()).optional(),
+        aggregations: z.union([z.boolean(), z.record(z.string(), z.unknown())]).optional(),
+        bodyTitles: z.unknown().nullable().optional(),
+        resultCountToShow: z.number().optional(),
+      })
+      .loose(),
+  })
+  .loose()
+
+type ParsedSearchResponse = z.infer<typeof livetonightSearchResponseSchema>
+
+const parseSearchResponse = (obj: Record<string, unknown>): ParsedSearchResponse | null => {
+  const parsed = livetonightSearchResponseSchema.safeParse(obj)
+  return parsed.success ? parsed.data : null
+}
+
+const extractUsersProfiles = (response: ParsedSearchResponse): Record<string, unknown>[] => {
+  const hitList = response.final.body.hits.hits
   const out: Record<string, unknown>[] = []
   for (const entry of hitList) {
-    if (!entry || typeof entry !== "object") {
-      continue
-    }
-    const source = (entry as Record<string, unknown>)._source
-    if (source && typeof source === "object") {
-      out.push(source as Record<string, unknown>)
+    const source = entry._source
+    if (source && typeof source === "object" && !Array.isArray(source)) {
+      out.push(source)
     }
   }
   return out
+}
+
+export const parseLiveTonightListingResponse = (jsonContent: string): UserProfile[] => {
+  let input: unknown
+  try {
+    input = JSON.parse(jsonContent)
+  } catch {
+    return []
+  }
+
+  if (!isRecord(input)) {
+    return []
+  }
+
+  const response = parseSearchResponse(input)
+  if (!response) {
+    return []
+  }
+
+  const profiles = extractUsersProfiles(response)
+  const users = profiles.flatMap((profile) => {
+    try {
+      return [parseUser(profile)]
+    } catch {
+      return []
+    }
+  })
+
+  return users
 }
 
 const parseUnknown = (): ParsedOutput =>
@@ -45,17 +149,18 @@ const parseUnknown = (): ParsedOutput =>
   })
 
 export const parseLiveTonight = (input: unknown): ParsedOutput => {
-  if (!input || typeof input !== "object") {
+  if (!isRecord(input)) {
     return parseUnknown()
   }
-  const obj = input as Record<string, unknown>
-  const final = obj.final
-  if (!final || typeof final !== "object") {
-    return parseUnknown()
-  }
-  const finalRecord = final as Record<string, unknown>
 
-  const profiles = extractUsersProfiles(obj)
+  const response = parseSearchResponse(input)
+  if (!response) {
+    return parseUnknown()
+  }
+
+  const { final } = response
+  const profiles = extractUsersProfiles(response)
+
   if (profiles.length > 0) {
     const users = profiles.flatMap((profile) => {
       try {
@@ -64,20 +169,15 @@ export const parseLiveTonight = (input: unknown): ParsedOutput => {
         return []
       }
     })
-    const body = finalRecord.body && typeof finalRecord.body === "object" ? (finalRecord.body as Record<string, unknown>) : {}
-    const hits = body.hits && typeof body.hits === "object" ? (body.hits as Record<string, unknown>) : {}
-    const total = hits.total && typeof hits.total === "object" ? (hits.total as Record<string, unknown>).value : null
-    const values =
-      finalRecord.values && typeof finalRecord.values === "object"
-        ? (finalRecord.values as Record<string, unknown>)
-        : null
+    const total = final.body.hits.total?.value ?? null
+    const values = final.values ?? null
 
     return validateParsedOutput({
       meta: {
         website: "livetonight",
         kind: "profiles",
         count: users.length,
-        totalHits: typeof total === "number" ? total : null,
+        totalHits: total,
         values,
         generatedAt: new Date().toISOString(),
         schemaVersion: SCHEMA_VERSION,
@@ -87,15 +187,13 @@ export const parseLiveTonight = (input: unknown): ParsedOutput => {
     })
   }
 
-  if (finalRecord.aggregations && typeof finalRecord.aggregations === "object") {
-    const values =
-      finalRecord.values && typeof finalRecord.values === "object"
-        ? (finalRecord.values as Record<string, unknown>)
-        : null
+  const { aggregations } = final
+  if (typeof aggregations === "object") {
+    const values = final.values ?? null
     const agg = parseAggregations(
       "musicians_aggregations",
-      finalRecord.aggregations as Record<string, unknown>,
-      values,
+      aggregations,
+      isRecord(values) ? values : null,
     )
     return validateParsedOutput({
       meta: {

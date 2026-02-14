@@ -1,4 +1,12 @@
-import { makeLocation, makeMedia, makeNormalizedResult, makePricing, makeRatings, makeSource, type ResultItem } from "../../schema/normalized.js"
+import {
+  makeLocation,
+  makeMedia,
+  makeNormalizedResult,
+  makePricing,
+  makeRatings,
+  makeSource,
+  type ResultItem,
+} from "../../schema/normalized.js"
 import { coerceFloat, coerceInt } from "../../utils/coerce.js"
 
 export interface UserProfile {
@@ -32,6 +40,11 @@ export interface AggregationsResult {
   raw: Record<string, unknown>
 }
 
+interface CityCountrySplit {
+  city: string | null
+  country: string | null
+}
+
 export const parseUser = (raw: Record<string, unknown>): UserProfile => {
   const profileId = raw.id
   if (typeof profileId !== "number" || !Number.isInteger(profileId)) {
@@ -56,7 +69,9 @@ export const parseUser = (raw: Record<string, unknown>): UserProfile => {
     cover: typeof raw.cover === "string" ? raw.cover : null,
     picture_mobile: typeof raw.picture_mobile === "string" ? raw.picture_mobile : null,
     videos: Array.isArray(raw.videos)
-      ? raw.videos.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object")
+      ? raw.videos.filter(
+          (value): value is Record<string, unknown> => Boolean(value) && typeof value === "object",
+        )
       : [],
     approved: typeof raw.approved === "boolean" ? raw.approved : null,
     prime: typeof raw.prime === "boolean" ? raw.prime : null,
@@ -78,7 +93,7 @@ export const parseAggregations = (
   raw: aggregations,
 })
 
-const splitCityCountry = (text: string | null): { city: string | null; country: string | null } => {
+const splitCityCountry = (text: string | null): CityCountrySplit => {
   if (!text || !text.includes(",")) {
     return { city: null, country: null }
   }
@@ -92,7 +107,7 @@ const splitCityCountry = (text: string | null): { city: string | null; country: 
   return { city: null, country: null }
 }
 
-export const normalizeUser = (user: UserProfile) => {
+export const buildProfile = (user: UserProfile) => {
   const name = user.band_name ?? user.name
   const split = splitCityCountry(user.address)
   const videoUrls = user.videos
@@ -123,7 +138,9 @@ export const normalizeUser = (user: UserProfile) => {
     tags: null,
     media: makeMedia({
       image_url: user.picture,
-      cover_urls: [user.cover, user.picture_mobile].filter((value): value is string => Boolean(value)),
+      cover_urls: [user.cover, user.picture_mobile].filter((value): value is string =>
+        Boolean(value),
+      ),
       video_urls: videoUrls.length ? videoUrls : null,
     }),
     source: makeSource({
@@ -169,7 +186,7 @@ export const normalizeAggregations = (aggs: AggregationsResult) =>
 
 export const buildProfileItem = (user: UserProfile): ResultItem => ({
   kind: "profile",
-  normalized: normalizeUser(user),
+  normalized: buildProfile(user),
   raw: user.raw,
 })
 

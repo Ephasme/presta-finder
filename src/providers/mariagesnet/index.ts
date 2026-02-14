@@ -45,6 +45,10 @@ export class MariagesnetProvider implements Provider {
       return { profiles: [], profileCount: 0, errors }
     }
 
+    const log = (message: string): void => {
+      opts.verbose?.("mariagesnet", message)
+    }
+
     if (!this.isAvailable()) {
       errors.push({
         code: "LISTING_FETCH_FAILED",
@@ -77,6 +81,9 @@ export class MariagesnetProvider implements Provider {
     const brightdataZone = process.env.BRIGHTDATA_WEB_UNLOCKER_ZONE ?? null
 
     // ── 1. Listing fetch + parse (fatal on failure) ──────────────
+    log(
+      `listing stage start (serviceType=${context.serviceType}, idGrupo=${idGrupo}, idSector=${idSector}, fetchLimit=${opts.fetchLimit ?? "none"})`,
+    )
     const listingResponses = await fetchListingPages(
       opts.cacheService,
       idGrupo,
@@ -86,6 +93,7 @@ export class MariagesnetProvider implements Provider {
       { fetchLimit: opts.fetchLimit, signal: opts.signal, verbose: opts.verbose },
     )
     const listings = parseListingPages(listingResponses)
+    log(`listing stage done (responses=${listingResponses.length}, vendors=${listings.length})`)
 
     // ── 2. Profile fetch (chunked, non-fatal per URL) ────────────
     const targets = listings
@@ -94,27 +102,45 @@ export class MariagesnetProvider implements Provider {
       .slice(0, opts.fetchLimit)
     const allFetchOutcomes: ProfileFetchOutcome[] = []
     const limit = pLimit(opts.profileConcurrency)
+    const totalChunks = Math.ceil(targets.length / CHUNK_SIZE)
+    const totalTargets = targets.length
+    let completed = 0
+    log(
+      `profile fetch stage start (targets=${targets.length}, concurrency=${opts.profileConcurrency}, chunkSize=${CHUNK_SIZE})`,
+    )
+
+    if (totalTargets > 0) {
+      opts.onProgress?.(0, totalTargets)
+    }
 
     for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
       throwIfAborted(opts.signal)
       const chunk = targets.slice(i, i + CHUNK_SIZE)
+      const chunkIndex = Math.floor(i / CHUNK_SIZE) + 1
+      log(`profile fetch chunk start (${chunkIndex}/${totalChunks}, size=${chunk.length})`)
 
       const chunkResults = await Promise.all(
         chunk.map((url) =>
           limit(async (): Promise<ProfileFetchOutcome> => {
+            let outcome: ProfileFetchOutcome
             try {
-              const outcome = await fetchProfilePage(
+              log(`profile fetch start (${url})`)
+              outcome = await fetchProfilePage(
                 opts.cacheService,
                 url,
                 brightdataApiKey,
                 brightdataZone,
                 { signal: opts.signal },
               )
-              await sleep(PROFILE_DELAY_MS, opts.signal)
-              return outcome
+              if (outcome.success) {
+                log(`profile fetch done (${url}, bytes=${outcome.html.length})`)
+              } else {
+                log(`profile fetch failed (${url}, message=${outcome.error.message})`)
+              }
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              return {
+              log(`profile fetch exception (${url}, message=${message})`)
+              outcome = {
                 success: false,
                 target: url,
                 error: {
@@ -126,12 +152,19 @@ export class MariagesnetProvider implements Provider {
                 },
               }
             }
+            await sleep(PROFILE_DELAY_MS, opts.signal)
+            completed += 1
+            opts.onProgress?.(completed, totalTargets)
+            return outcome
           }),
         ),
       )
 
       allFetchOutcomes.push(...chunkResults)
-      opts.onProgress?.(Math.min(i + CHUNK_SIZE, targets.length), targets.length)
+      const successCount = chunkResults.filter((outcome) => outcome.success).length
+      log(
+        `profile fetch chunk done (${chunkIndex}/${totalChunks}, success=${successCount}, failed=${chunkResults.length - successCount})`,
+      )
     }
 
     // Collect fetch errors
@@ -142,6 +175,7 @@ export class MariagesnetProvider implements Provider {
     }
 
     // ── 3. Parse profile pages (non-fatal per page) ──────────────
+    log(`profile parse stage start (pages=${allFetchOutcomes.length})`)
     const parseOutcomes: ProfileParseOutcome<ParsedProfilePage>[] = []
     for (const outcome of allFetchOutcomes) {
       if (!outcome.success) continue
@@ -161,12 +195,25 @@ export class MariagesnetProvider implements Provider {
         parseOutcomes.push({ success: false, target: outcome.target, error: parseError })
       }
     }
+    const parsedCount = parseOutcomes.filter((outcome) => outcome.success).length
+    log(
+      `profile parse stage done (success=${parsedCount}, failed=${parseOutcomes.length - parsedCount})`,
+    )
 
     // ── 4. Merge listing + profile data ──────────────────────────
-    const { merged, errors: mergeErrors } = merge(listings, parseOutcomes)
+    const targetSet = new Set(targets)
+    const limitedListings = listings.filter((listing) =>
+      listing.storefront_url ? targetSet.has(listing.storefront_url) : false,
+    )
+    log(
+      `merge stage start (listings=${limitedListings.length}/${listings.length}, parsed=${parsedCount})`,
+    )
+    const { merged, errors: mergeErrors } = merge(limitedListings, parseOutcomes)
     errors.push(...mergeErrors)
+    log(`merge stage done (merged=${merged.length}, errors=${mergeErrors.length})`)
 
     // ── 5. Normalize to ServiceProfile<"wedding-dj"> ────────────
+    log(`normalize stage start (merged=${merged.length})`)
     const profiles: ServiceProfile<"wedding-dj">[] = []
     for (const parsed of merged) {
       try {
@@ -182,7 +229,15 @@ export class MariagesnetProvider implements Provider {
         })
       }
     }
+    log(`normalize stage done (profiles=${profiles.length}, errors=${errors.length})`)
 
-    return { profiles, profileCount: profiles.length, errors }
+    return {
+      profiles,
+      profileCount: profiles.length,
+      listingCount: listings.length,
+      fetchedCount: totalTargets,
+      fetchLimit: opts.fetchLimit,
+      errors,
+    }
   }
 }

@@ -131,8 +131,6 @@ export const evaluateProfiles = async (args: {
                 { role: "user", content: JSON.stringify(payload, null, 2) },
               ],
               response_format: zodResponseFormat(evaluationSchema, "profile_evaluation"),
-              temperature: DEFAULT_TEMPERATURE,
-              max_tokens: DEFAULT_MAX_OUTPUT_TOKENS,
               reasoning_effort: args.reasoningEffort,
             },
             args.signal ? { signal: args.signal } : undefined,

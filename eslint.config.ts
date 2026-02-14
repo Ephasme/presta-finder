@@ -33,6 +33,7 @@ export default tseslint.config(
     rules: {
       // Base
       "no-console": "off",
+      "no-nested-ternary": "error",
 
       // Allow unused variables prefixed with underscore
       "@typescript-eslint/no-unused-vars": [

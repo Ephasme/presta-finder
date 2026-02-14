@@ -11,6 +11,11 @@ const toCommonInput = (parsed: Parsed1001DjProfile): CommonProfileInput => ({
   providerId: parsed.listing.profile_id !== null ? String(parsed.listing.profile_id) : null,
   name: parsed.listing.name,
   profileUrl: parsed.listing.url,
+  description:
+    typeof parsed.profilePage?.description === "string" &&
+    parsed.profilePage.description.trim().length > 0
+      ? parsed.profilePage.description
+      : null,
   city: parsed.listing.address_locality,
   region: parsed.listing.address_region,
   ratingValue: parsed.profilePage?.ratingValue ?? parsed.listing.rating_value,

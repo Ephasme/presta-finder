@@ -1,16 +1,28 @@
 import type { EvaluationResult } from "./evaluate-profiles.js"
+import type { ReportRecord } from "./evaluation.js"
 import { profileTitle } from "./profile-title.js"
 
-const sortKey = (item: EvaluationResult): [number, number] => {
-  const score = item.evaluation?.score
-  if (typeof score === "number") {
-    return [0, -score]
-  }
-  return [1, -1]
+interface SuccessfulEvaluation extends EvaluationResult {
+  evaluation: ReportRecord
+}
+
+const hasEvaluation = (item: EvaluationResult): item is SuccessfulEvaluation => {
+  return item.evaluation !== null
+}
+
+const compareByScore = (a: SuccessfulEvaluation, b: SuccessfulEvaluation): number => {
+  return b.evaluation.score - a.evaluation.score // Descending order (highest first)
 }
 
 const safeMd = (value: unknown): string => {
-  const s = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value)
+  let s: string
+  if (typeof value === "string") {
+    s = value
+  } else if (value == null) {
+    s = ""
+  } else {
+    s = JSON.stringify(value)
+  }
   return s.replaceAll("|", "\\|")
 }
 
@@ -43,12 +55,20 @@ export const renderReport = (args: {
   serviceTypeLabel?: string
 }): string => {
   const lines: string[] = []
-  const ordered = [...args.evals].sort((a, b) => {
-    const aKey = sortKey(a)
-    const bKey = sortKey(b)
-    if (aKey[0] !== bKey[0]) return aKey[0] - bKey[0]
-    return aKey[1] - bKey[1]
+
+  // Filter out failed evaluations and warn
+  const successfulEvals = args.evals.filter((item): item is SuccessfulEvaluation => {
+    if (!hasEvaluation(item)) {
+      console.warn(
+        `⚠️  Skipping profile "${profileTitle(item.profile)}" from report - evaluation failed: ${item.error ?? "unknown error"}`,
+      )
+      return false
+    }
+    return true
   })
+
+  // Sort by score descending (highest first)
+  const ordered = successfulEvals.sort(compareByScore)
 
   const byProvider: Record<string, number> = {}
   for (const item of ordered) {
@@ -56,6 +76,7 @@ export const renderReport = (args: {
     byProvider[provider] = (byProvider[provider] ?? 0) + 1
   }
 
+  const failedCount = args.evals.length - successfulEvals.length
   const title = args.serviceTypeLabel ?? "DJ"
   lines.push(`# ${title} — Rapport d'évaluation (${args.model})`)
   lines.push("")
@@ -63,7 +84,11 @@ export const renderReport = (args: {
   lines.push(`- Modèle: ${args.model}`)
   lines.push(`- Reasoning effort: ${args.reasoningEffort ?? "default"}`)
   lines.push(`- Verbosité: ${args.verbosity}`)
-  lines.push(`- Profils analysés: ${ordered.length}`)
+  lines.push(`- Profils analysés: ${successfulEvals.length}`)
+  if (failedCount > 0) {
+    lines.push(`- ⚠️ Profils échoués (exclus du rapport): ${failedCount}`)
+  }
+  lines.push(`- Tri: score décroissant (meilleurs en premier)`)
   if (Object.keys(byProvider).length > 0) {
     const stats = Object.entries(byProvider)
       .sort(([a], [b]) => a.localeCompare(b))
@@ -87,7 +112,7 @@ export const renderReport = (args: {
     const profile = item.profile
     const evaluation = item.evaluation
     lines.push(
-      `| ${idx + 1} | ${safeMd(profileTitle(profile))} | ${safeMd(profile.provider)} | ${safeMd(profile.location.city ?? profile.location.region ?? "")} | ${formatMoney(profile.budgetSummary.minKnownPrice)} | ${safeMd(formatRating(profile.reputation.rating, profile.reputation.reviewCount))} | ${evaluation?.score ?? ""} | ${safeMd(evaluation?.verdict ?? "")} |`,
+      `| ${idx + 1} | ${safeMd(profileTitle(profile))} | ${safeMd(profile.provider)} | ${safeMd(profile.location.city ?? profile.location.region ?? "")} | ${formatMoney(profile.budgetSummary.minKnownPrice)} | ${safeMd(formatRating(profile.reputation.rating, profile.reputation.reviewCount))} | ${evaluation.score} | ${safeMd(evaluation.verdict)} |`,
     )
   }
 
@@ -114,31 +139,27 @@ export const renderReport = (args: {
     const rating = formatRating(profile.reputation.rating, profile.reputation.reviewCount)
     if (rating) lines.push(`- Note: ${rating}`)
 
-    if (item.evaluation) {
-      const evaluation = item.evaluation
-      lines.push(`- Score: ${evaluation.score}/100`)
-      lines.push(`- Verdict: ${evaluation.verdict}`)
-      if (evaluation.summary) lines.push(`- Synthèse: ${evaluation.summary}`)
-      if (evaluation.pros.length) lines.push(`- Points forts: ${evaluation.pros.join("; ")}`)
-      if (evaluation.cons.length) lines.push(`- Points faibles: ${evaluation.cons.join("; ")}`)
-      if (evaluation.risks.length) lines.push(`- Risques: ${evaluation.risks.join("; ")}`)
-      if (evaluation.missing_info.length)
-        lines.push(`- Infos manquantes: ${evaluation.missing_info.join("; ")}`)
-      if (evaluation.questions.length) lines.push(`- Questions: ${evaluation.questions.join("; ")}`)
-      if (evaluation.score_breakdown) {
-        const detail = Object.entries(evaluation.score_breakdown)
-          .map(([name, value]) => `${name}=${value}`)
-          .join(", ")
-        lines.push(`- Détail score: ${detail}`)
-      }
-      if (evaluation.score_justifications) {
-        const detail = Object.entries(evaluation.score_justifications)
-          .map(([name, text]) => `${name}: ${text}`)
-          .join(" | ")
-        lines.push(`- Justifications: ${detail}`)
-      }
-    } else {
-      lines.push(`- Erreur: ${item.error}`)
+    const evaluation = item.evaluation
+    lines.push(`- Score: ${evaluation.score}/100`)
+    lines.push(`- Verdict: ${evaluation.verdict}`)
+    if (evaluation.summary) lines.push(`- Synthèse: ${evaluation.summary}`)
+    if (evaluation.pros.length) lines.push(`- Points forts: ${evaluation.pros.join("; ")}`)
+    if (evaluation.cons.length) lines.push(`- Points faibles: ${evaluation.cons.join("; ")}`)
+    if (evaluation.risks.length) lines.push(`- Risques: ${evaluation.risks.join("; ")}`)
+    if (evaluation.missing_info.length)
+      lines.push(`- Infos manquantes: ${evaluation.missing_info.join("; ")}`)
+    if (evaluation.questions.length) lines.push(`- Questions: ${evaluation.questions.join("; ")}`)
+    if (evaluation.score_breakdown) {
+      const detail = Object.entries(evaluation.score_breakdown)
+        .map(([name, value]) => `${name}=${value}`)
+        .join(", ")
+      lines.push(`- Détail score: ${detail}`)
+    }
+    if (evaluation.score_justifications) {
+      const detail = Object.entries(evaluation.score_justifications)
+        .map(([name, text]) => `${name}: ${text}`)
+        .join(" | ")
+      lines.push(`- Justifications: ${detail}`)
     }
   }
 

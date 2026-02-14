@@ -13,6 +13,7 @@ export interface CommonProfileInput {
   providerId: string | null
   name: string | null
   profileUrl: string | null
+  description: string | null
   city: string | null
   region: string | null
   ratingValue: number | null
@@ -83,6 +84,7 @@ export const buildCommonProfile = (
     providerId: input.providerId,
     name: input.name,
     profileUrl: input.profileUrl,
+    description: input.description,
     reputation: {
       rating: input.ratingValue,
       reviewCount: input.ratingCount,

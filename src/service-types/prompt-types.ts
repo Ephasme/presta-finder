@@ -4,6 +4,7 @@ export interface PromptPriority {
   description: string
   idealCondition?: string
   penaltyCondition?: string
+  examples?: string[]
 }
 
 export interface PromptVerdictRules {
@@ -15,7 +16,12 @@ export interface PromptVerdictRules {
 export interface PromptEventContext {
   eventType?: string
   location?: string
+  date?: string
   guestCount?: number
+  /** Musical styles to favour (indie, electro, etc.). */
+  musicalStylesDesired?: string[]
+  /** Musical styles that trigger elimination or strong penalty (Rai, variété pure, etc.). */
+  musicalStylesToAvoid?: string[]
 }
 
 export interface PromptConfig {

@@ -7,7 +7,8 @@
     "presta-finder": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && pnpm build:copy-assets",
+    "build:copy-assets": "cp src/service-types/wedding-dj/prompt.yaml dist/service-types/wedding-dj/",
     "start": "pnpm build && node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "lint": "eslint src test",
@@ -35,6 +36,7 @@
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
     "dotenv": "^17.3.0",
+    "js-yaml": "^4.1.1",
     "openai": "^6.21.0",
     "ora": "^9.3.0",
     "p-limit": "^7.3.0",
@@ -43,6 +45,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@types/cli-progress": "^3.11.6",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.2.3",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",

@@ -113,6 +113,9 @@ export interface ProviderRunResult {
   profiles: AnyServiceProfile[]
   profileCount: number
   errors: PipelineError[]
+  listingCount?: number
+  fetchedCount?: number
+  fetchLimit?: number
 }
 
 export interface Provider {

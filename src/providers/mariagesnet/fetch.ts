@@ -1,4 +1,4 @@
-import { httpPostJson, mergeHeaders } from "../../utils/http.js"
+import { httpPostText, mergeHeaders } from "../../utils/http.js"
 import { isRecord } from "../../utils/type-guards.js"
 import { buildUrl } from "../../utils/url.js"
 import { paginateUntil } from "../../utils/paginate.js"
@@ -98,11 +98,18 @@ export const fetchListingPages = async (
   const config = ensureBrightDataConfig(brightdataApiKey, brightdataZone)
   const endpoint = DEFAULT_ENDPOINT
   const timeoutMs = 15_000
+  const log = (message: string): void => {
+    opts.verbose?.("mariagesnet", message)
+  }
 
   const rawListingResponses: unknown[] = []
   const seenVendorIds = new Set<string>()
   const maxPages = 50
   let totalVendorCount = 0
+
+  log(
+    `listing fetch start (idGrupo=${idGrupo}, idSector=${idSector}, fetchLimit=${opts.fetchLimit ?? "none"}, maxPages=${maxPages})`,
+  )
 
   for await (const { items } of paginateUntil<unknown>({
     fetchPage: async (pageNum) => {
@@ -118,6 +125,8 @@ export const fetchListingPages = async (
           isNearby: 1,
         }),
       )
+      log(`listing page fetch start (page=${pageNum})`)
+      const pageStart = Date.now()
       const payloadContent = await cacheService.getOrFetchArtifact({
         artifactType: "listing_response",
         request: {
@@ -126,16 +135,17 @@ export const fetchListingPages = async (
           body: buildBrightDataRequestBody(config.zone, targetUrl),
         },
         fetchContent: async () =>
-          JSON.stringify(
-            await brightdataGet({
-              url: targetUrl,
-              apiKey: config.apiKey,
-              zone: config.zone,
-              timeoutMs,
-              signal: opts.signal,
-            }),
-          ),
+          brightdataGet({
+            url: targetUrl,
+            apiKey: config.apiKey,
+            zone: config.zone,
+            timeoutMs,
+            signal: opts.signal,
+          }),
       })
+      log(
+        `listing page fetch done (page=${pageNum}, bytes=${payloadContent.length}, elapsedMs=${Date.now() - pageStart})`,
+      )
       const payload = parseJsonContent(payloadContent, targetUrl)
       return [payload]
     },
@@ -145,31 +155,37 @@ export const fetchListingPages = async (
     signal: opts.signal,
   })) {
     if (items.length === 0) {
+      log("listing fetch received empty page, stopping")
       break
     }
 
+    const beforeCount = totalVendorCount
     for (const payload of items) {
       rawListingResponses.push(payload)
       // Count unique vendors for progress reporting
-      const extracted = extractRawHtml(payload)
-      if (extracted) {
-        // Quick check for vendor count without full parsing
-        const vendorIdMatches = extracted.matchAll(/data-vendor-id="(\d+)"/g)
-        for (const match of vendorIdMatches) {
-          const vendorId = match[1]
-          if (vendorId && !seenVendorIds.has(vendorId)) {
+      const vendorIds = extractVendorIdsFromPayload(payload)
+      if (vendorIds.length > 0) {
+        for (const vendorId of vendorIds) {
+          if (!seenVendorIds.has(vendorId)) {
             seenVendorIds.add(vendorId)
             totalVendorCount += 1
           }
         }
       }
     }
+    if (totalVendorCount !== beforeCount) {
+      log(
+        `listing page processed (payloads=${items.length}, vendorsAdded=${totalVendorCount - beforeCount}, totalVendors=${totalVendorCount})`,
+      )
+    }
 
     if (opts.fetchLimit !== undefined && totalVendorCount >= opts.fetchLimit) {
+      log(`listing fetch reached fetchLimit (${opts.fetchLimit})`)
       break
     }
   }
 
+  log(`listing fetch done (responses=${rawListingResponses.length}, vendors=${totalVendorCount})`)
   return rawListingResponses
 }
 
@@ -182,9 +198,9 @@ const ensureBrightDataConfig = (apiKey: string | null, zone: string | null): Bri
   return { apiKey, zone }
 }
 
-const brightdataGet = async (args: BrightDataGetArgs): Promise<unknown> =>
+const brightdataGet = async (args: BrightDataGetArgs): Promise<string> =>
   (
-    await httpPostJson(
+    await httpPostText(
       BRIGHTDATA_API_ENDPOINT,
       {
         zone: args.zone,
@@ -235,6 +251,49 @@ const extractRawHtml = (payload: unknown): string | null => {
   return null
 }
 
+const extractListingHtml = (payload: unknown): string | null => {
+  const raw = extractRawHtml(payload)
+  if (raw) {
+    return raw
+  }
+  if (!isRecord(payload)) {
+    return null
+  }
+  const listingResults = payload.listingResults
+  if (typeof listingResults === "string") {
+    return listingResults
+  }
+  const data = payload.data
+  if (isRecord(data) && typeof data.listingResults === "string") {
+    return data.listingResults
+  }
+  return null
+}
+
+const extractVendorIdsFromPayload = (payload: unknown): string[] => {
+  if (isRecord(payload)) {
+    const rawIds = payload.resultVendorsIds
+    if (Array.isArray(rawIds)) {
+      return rawIds
+        .map((value) => (value === null || value === undefined ? null : String(value)))
+        .filter((value): value is string => Boolean(value))
+    }
+  }
+  const html = extractListingHtml(payload)
+  if (!html) {
+    return []
+  }
+  const ids: string[] = []
+  const vendorIdMatches = html.matchAll(/data-vendor-id="(\d+)"/g)
+  for (const match of vendorIdMatches) {
+    const vendorId = match[1]
+    if (vendorId) {
+      ids.push(vendorId)
+    }
+  }
+  return ids
+}
+
 export const fetchProfilePage = async (
   cacheService: CacheService,
   profileUrl: string,
@@ -254,22 +313,18 @@ export const fetchProfilePage = async (
         body: buildBrightDataRequestBody(config.zone, profileUrl),
       },
       fetchContent: async () =>
-        JSON.stringify(
-          await brightdataGet({
-            url: profileUrl,
-            apiKey: config.apiKey,
-            zone: config.zone,
-            timeoutMs,
-            signal: opts.signal,
-          }),
-        ),
+        brightdataGet({
+          url: profileUrl,
+          apiKey: config.apiKey,
+          zone: config.zone,
+          timeoutMs,
+          signal: opts.signal,
+        }),
     })
-    const payload = parseJsonContent(payloadContent, profileUrl)
-    const html = extractRawHtml(payload)
-    if (!html) {
-      throw new Error("HTML not found in Bright Data response")
+    if (!payloadContent) {
+      throw new Error("Empty response from Bright Data")
     }
-    return { success: true, target: profileUrl, html }
+    return { success: true, target: profileUrl, html: payloadContent }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return {

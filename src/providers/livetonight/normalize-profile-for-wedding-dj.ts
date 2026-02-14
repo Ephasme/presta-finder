@@ -12,6 +12,12 @@ const toCommonInput = (parsed: ParsedLiveTonightProfile): CommonProfileInput => 
     ? (parsed.listing.address.split(",")[0]?.trim() ?? null)
     : null
 
+  const descriptionCandidates = [parsed.profilePage?.description, parsed.listing.description]
+  const description =
+    descriptionCandidates.find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    ) ?? null
+
   const videoUrls = parsed.listing.videos
     .map((video) => video.link)
     .filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -23,6 +29,7 @@ const toCommonInput = (parsed: ParsedLiveTonightProfile): CommonProfileInput => 
     profileUrl: parsed.listing.slug
       ? `https://www.livetonight.fr/groupe-musique-dj/${parsed.listing.profile_id}-${parsed.listing.slug}`
       : null,
+    description,
     city,
     region: null,
     ratingValue: parsed.profilePage?.ratingValue ?? parsed.listing.rating,

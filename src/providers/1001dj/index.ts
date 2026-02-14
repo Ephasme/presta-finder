@@ -54,6 +54,12 @@ export class Dj1001Provider implements Provider {
     const targets = listings.map((entry) => entry.url).slice(0, opts.fetchLimit)
     const allFetchOutcomes: ProfileFetchOutcome[] = []
     const limit = pLimit(opts.profileConcurrency)
+    const totalTargets = targets.length
+    let completed = 0
+
+    if (totalTargets > 0) {
+      opts.onProgress?.(0, totalTargets)
+    }
 
     for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
       throwIfAborted(opts.signal)
@@ -62,16 +68,15 @@ export class Dj1001Provider implements Provider {
       const chunkResults = await Promise.all(
         chunk.map((url) =>
           limit(async (): Promise<ProfileFetchOutcome> => {
+            let outcome: ProfileFetchOutcome
             try {
-              const outcome = await fetchProfilePage(opts.cacheService, url, {
+              outcome = await fetchProfilePage(opts.cacheService, url, {
                 referer: DEFAULT_ENDPOINT,
                 signal: opts.signal,
               })
-              await sleep(PROFILE_DELAY_MS, opts.signal)
-              return outcome
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              return {
+              outcome = {
                 success: false,
                 target: url,
                 error: {
@@ -83,12 +88,15 @@ export class Dj1001Provider implements Provider {
                 },
               }
             }
+            await sleep(PROFILE_DELAY_MS, opts.signal)
+            completed += 1
+            opts.onProgress?.(completed, totalTargets)
+            return outcome
           }),
         ),
       )
 
       allFetchOutcomes.push(...chunkResults)
-      opts.onProgress?.(Math.min(i + CHUNK_SIZE, targets.length), targets.length)
     }
 
     // Collect fetch errors
@@ -120,7 +128,9 @@ export class Dj1001Provider implements Provider {
     }
 
     // ── 4. Merge listing + profile data ──────────────────────────
-    const { merged, errors: mergeErrors } = merge(listings, parseOutcomes)
+    const targetSet = new Set(targets)
+    const limitedListings = listings.filter((listing) => targetSet.has(listing.url))
+    const { merged, errors: mergeErrors } = merge(limitedListings, parseOutcomes)
     errors.push(...mergeErrors)
 
     // ── 5. Normalize to ServiceProfile<"wedding-dj"> ────────────
@@ -140,6 +150,13 @@ export class Dj1001Provider implements Provider {
       }
     }
 
-    return { profiles, profileCount: profiles.length, errors }
+    return {
+      profiles,
+      profileCount: profiles.length,
+      listingCount: listings.length,
+      fetchedCount: totalTargets,
+      fetchLimit: opts.fetchLimit,
+      errors,
+    }
   }
 }

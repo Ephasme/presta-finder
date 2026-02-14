@@ -3,27 +3,39 @@ import type {
   DecisionLineEntry,
   FileEntry,
   ProgressTracker,
+  ProviderResultSummary,
   ServiceStatus,
   SpinnerHandle,
 } from "./types.js"
 
 export class PlainRenderer implements CliRenderer {
-  header(runId: string, outputDir: string, dryRun: boolean): void {
+  header(
+    runId: string,
+    outputDir: string,
+    dryRun: boolean,
+    model: string,
+    reasoningEffort: string | null,
+  ): void {
     console.log("=== DJ Profile Research Pipeline ===")
     console.log(`Run ID:  ${runId}`)
     console.log(`Output:  ${outputDir}`)
     console.log(`Mode:    ${dryRun ? "DRY RUN" : "LIVE"}`)
+    console.log(`Model:   ${model}`)
+    console.log(`Effort:  ${reasoningEffort ?? "default"}`)
     console.log("")
   }
 
   envTable(services: ServiceStatus[]): void {
     console.log("Service         Status")
     for (const service of services) {
-      const status = service.ready
-        ? "ready"
-        : service.required
-          ? "missing (required)"
-          : "not configured"
+      let status: string
+      if (service.ready) {
+        status = "ready"
+      } else if (service.required) {
+        status = "missing (required)"
+      } else {
+        status = "not configured"
+      }
       console.log(`${service.name.padEnd(15)} ${status}`)
     }
     console.log("")
@@ -93,8 +105,19 @@ export class PlainRenderer implements CliRenderer {
     // no-op
   }
 
-  providerSuccess(displayName: string, profileCount: number): void {
-    console.log(`[OK] ${displayName} - ${profileCount} profiles`)
+  providerSuccess(displayName: string, summary: ProviderResultSummary): void {
+    const listed = summary.listingCount ?? summary.profileCount
+    if (
+      summary.fetchLimit !== undefined &&
+      summary.fetchedCount !== undefined &&
+      listed > summary.fetchedCount
+    ) {
+      console.log(
+        `[OK] ${displayName} - ${listed} listed, ${summary.fetchedCount} fetched (limit=${summary.fetchLimit})`,
+      )
+      return
+    }
+    console.log(`[OK] ${displayName} - ${summary.profileCount} profiles`)
   }
 
   providerSkipped(displayName: string): void {

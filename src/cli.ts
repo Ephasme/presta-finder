@@ -251,6 +251,9 @@ interface ProviderTaskResult {
   displayName: string
   profiles: AnyServiceProfile[]
   profileCount: number
+  listingCount?: number
+  fetchedCount?: number
+  fetchLimit?: number
   errorCount: number
 }
 
@@ -285,7 +288,7 @@ const main = async (): Promise<number> => {
     const outputDir = join(options.outputDir, runId)
     await mkdir(outputDir, { recursive: true })
 
-    renderer.header(runId, outputDir, options.dryRun)
+    renderer.header(runId, outputDir, options.dryRun, options.model, options.reasoningEffort)
     renderer.envTable(buildServiceStatusEntries())
 
     // Geocode the location
@@ -381,6 +384,9 @@ const main = async (): Promise<number> => {
               displayName: provider.displayName,
               profiles: result.profiles,
               profileCount: result.profileCount,
+              listingCount: result.listingCount,
+              fetchedCount: result.fetchedCount,
+              fetchLimit: result.fetchLimit,
               errorCount: result.errors.length,
             }
           } catch (error) {
@@ -412,7 +418,12 @@ const main = async (): Promise<number> => {
             `${run.providerName} completed with ${run.errorCount} non-fatal errors`,
           )
         }
-        renderer.providerSuccess(run.displayName, run.profileCount)
+        renderer.providerSuccess(run.displayName, {
+          profileCount: run.profileCount,
+          listingCount: run.listingCount,
+          fetchedCount: run.fetchedCount,
+          fetchLimit: run.fetchLimit,
+        })
         continue
       }
 
@@ -470,6 +481,8 @@ const main = async (): Promise<number> => {
         budgetTarget: options.budgetTarget,
         budgetMax: options.budgetMax,
       })
+      const promptFile = join(outputDir, `${options.serviceType}_eval_prompt.md`)
+      await writeFile(promptFile, criteriaText, "utf-8")
 
       const onProgress = (event: EvalProgressEvent): void => {
         if (event.error) {
@@ -510,7 +523,12 @@ const main = async (): Promise<number> => {
                 )
               })
             : []
-        evalSpinner.update([progressLine, ...workerLines].join("\n"))
+        const separator = "─".repeat(80)
+        const displayLines =
+          workerLines.length > 0
+            ? [progressLine, separator, workerLines.join(`\n${separator}\n`)]
+            : [progressLine]
+        evalSpinner.update(displayLines.join("\n"))
       }
 
       const evals = await evaluateProfiles({

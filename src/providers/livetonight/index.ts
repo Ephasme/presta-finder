@@ -62,6 +62,12 @@ export class LiveTonightProvider implements Provider {
 
     const allFetchOutcomes: ProfileFetchOutcome[] = []
     const limit = pLimit(opts.profileConcurrency)
+    const totalTargets = targets.length
+    let completed = 0
+
+    if (totalTargets > 0) {
+      opts.onProgress?.(0, totalTargets)
+    }
 
     for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
       throwIfAborted(opts.signal)
@@ -70,16 +76,15 @@ export class LiveTonightProvider implements Provider {
       const chunkResults = await Promise.all(
         chunk.map(({ id, slug }) =>
           limit(async (): Promise<ProfileFetchOutcome> => {
+            let outcome: ProfileFetchOutcome
             try {
-              const outcome = await fetchProfilePage(opts.cacheService, id, slug, {
+              outcome = await fetchProfilePage(opts.cacheService, id, slug, {
                 signal: opts.signal,
               })
-              await sleep(PROFILE_DELAY_MS, opts.signal)
-              return outcome
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
               const url = `https://www.livetonight.fr/groupe-musique-dj/${id}-${slug}`
-              return {
+              outcome = {
                 success: false,
                 target: url,
                 error: {
@@ -91,12 +96,15 @@ export class LiveTonightProvider implements Provider {
                 },
               }
             }
+            await sleep(PROFILE_DELAY_MS, opts.signal)
+            completed += 1
+            opts.onProgress?.(completed, totalTargets)
+            return outcome
           }),
         ),
       )
 
       allFetchOutcomes.push(...chunkResults)
-      opts.onProgress?.(Math.min(i + CHUNK_SIZE, targets.length), targets.length)
     }
 
     // Collect fetch errors
@@ -128,7 +136,11 @@ export class LiveTonightProvider implements Provider {
     }
 
     // ── 4. Merge listing + profile data ──────────────────────────
-    const { merged, errors: mergeErrors } = merge(listings, parseOutcomes)
+    const targetSet = new Set(targets.map((target) => `${target.id}:${target.slug}`))
+    const limitedListings = listings.filter(
+      (listing) => listing.slug !== null && targetSet.has(`${listing.profile_id}:${listing.slug}`),
+    )
+    const { merged, errors: mergeErrors } = merge(limitedListings, parseOutcomes)
     errors.push(...mergeErrors)
 
     // ── 5. Normalize to ServiceProfile<"wedding-dj"> ────────────
@@ -151,6 +163,13 @@ export class LiveTonightProvider implements Provider {
       }
     }
 
-    return { profiles, profileCount: profiles.length, errors }
+    return {
+      profiles,
+      profileCount: profiles.length,
+      listingCount: listings.length,
+      fetchedCount: totalTargets,
+      fetchLimit: opts.fetchLimit,
+      errors,
+    }
   }
 }

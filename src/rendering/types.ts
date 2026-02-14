@@ -12,6 +12,13 @@ export interface FileEntry {
   isReport: boolean
 }
 
+export interface ProviderResultSummary {
+  profileCount: number
+  listingCount?: number
+  fetchedCount?: number
+  fetchLimit?: number
+}
+
 export interface DecisionLineEntry {
   profileName: string
   verdict: "yes" | "maybe" | "no" | "error" | "unknown"
@@ -31,12 +38,18 @@ export interface SpinnerHandle {
 }
 
 export interface CliRenderer {
-  header(runId: string, outputDir: string, dryRun: boolean): void
+  header(
+    runId: string,
+    outputDir: string,
+    dryRun: boolean,
+    model: string,
+    reasoningEffort: string | null,
+  ): void
   envTable(services: ServiceStatus[]): void
   fetchStarted(displayName: string): void
   createProgressTracker(providerName: string): ProgressTracker
   stopProgress(): void
-  providerSuccess(displayName: string, profileCount: number): void
+  providerSuccess(displayName: string, summary: ProviderResultSummary): void
   providerSkipped(displayName: string): void
   providerError(displayName: string, errorMessage: string): void
   providerCancelled(displayName: string): void

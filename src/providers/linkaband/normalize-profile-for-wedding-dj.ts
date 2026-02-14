@@ -31,12 +31,22 @@ const primaryPrice = (
 
 const toCommonInput = (parsed: ParsedLinkabandArtist): CommonProfileInput => {
   const listing = parsed.listing
+  const descriptionCandidates = [
+    parsed.profilePage?.description,
+    listing.description,
+    listing.lowest_formation?.description,
+  ]
+  const description =
+    descriptionCandidates.find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    ) ?? null
 
   return {
     provider: "linkaband",
     providerId: String(listing.profile_id),
     name: listing.name,
     profileUrl: `https://linkaband.com/${listing.slug}`,
+    description,
     city: listing.localisation.city,
     region: listing.departement_name,
     ratingValue: parsed.profilePage?.ratingValue ?? listing.global_rating,

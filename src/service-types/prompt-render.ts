@@ -43,6 +43,18 @@ export const renderSystemPrompt = (config: PromptConfig, ctx: RenderContext): st
     lines.push(
       `${idx + 1}. **${priority.label}** — ${applyTemplateVars(priority.description, ctx)}`,
     )
+    if (priority.idealCondition) {
+      lines.push(`   Idéal : ${applyTemplateVars(priority.idealCondition, ctx)}`)
+    }
+    if (priority.penaltyCondition) {
+      lines.push(`   Malus : ${applyTemplateVars(priority.penaltyCondition, ctx)}`)
+    }
+    if (priority.examples?.length) {
+      lines.push(`   Exemples de cas satisfaisants pour ce critère :`)
+      for (const example of priority.examples) {
+        lines.push(`   - ${example}`)
+      }
+    }
   }
   lines.push("")
 
@@ -74,6 +86,19 @@ export const renderSystemPrompt = (config: PromptConfig, ctx: RenderContext): st
     const location = ctx.locationOverride ?? config.eventContext.location
     if (location) {
       lines.push(`Lieu : ${location}.`)
+    }
+    if (config.eventContext.date) {
+      lines.push(`Date : ${config.eventContext.date}.`)
+    }
+    if (config.eventContext.musicalStylesDesired?.length) {
+      lines.push(
+        `Styles musicaux souhaités : ${config.eventContext.musicalStylesDesired.join(", ")}.`,
+      )
+    }
+    if (config.eventContext.musicalStylesToAvoid?.length) {
+      lines.push(
+        `Styles musicaux à rejeter (verdict no si dominants) : ${config.eventContext.musicalStylesToAvoid.join(", ")}.`,
+      )
     }
     lines.push(`Budget cible : ${ctx.budgetTarget}€ (strict). Budget max : ${ctx.budgetMax}€.`)
     lines.push("")

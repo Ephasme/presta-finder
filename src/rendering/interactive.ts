@@ -9,6 +9,7 @@ import type {
   DecisionLineEntry,
   FileEntry,
   ProgressTracker,
+  ProviderResultSummary,
   ServiceStatus,
   SpinnerHandle,
 } from "./types.js"
@@ -16,11 +17,19 @@ import type {
 export class InteractiveRenderer implements CliRenderer {
   private multiBar: cliProgress.MultiBar | null = null
 
-  header(runId: string, outputDir: string, dryRun: boolean): void {
+  header(
+    runId: string,
+    outputDir: string,
+    dryRun: boolean,
+    model: string,
+    reasoningEffort: string | null,
+  ): void {
     const body = [
       `${chalk.bold("Run ID")}    ${runId}`,
       `${chalk.bold("Output")}    ${outputDir}`,
       `${chalk.bold("Mode")}      ${dryRun ? chalk.yellow("DRY RUN") : chalk.green("LIVE")}`,
+      `${chalk.bold("Model")}     ${model}`,
+      `${chalk.bold("Effort")}    ${reasoningEffort ?? "default"}`,
     ].join("\n")
 
     console.log(
@@ -38,11 +47,14 @@ export class InteractiveRenderer implements CliRenderer {
     })
 
     for (const service of services) {
-      const status = service.ready
-        ? chalk.green("ready")
-        : service.required
-          ? chalk.red("missing (required)")
-          : chalk.gray("not configured")
+      let status: string
+      if (service.ready) {
+        status = chalk.green("ready")
+      } else if (service.required) {
+        status = chalk.red("missing (required)")
+      } else {
+        status = chalk.gray("not configured")
+      }
       table.push([service.name, status])
     }
 
@@ -82,8 +94,21 @@ export class InteractiveRenderer implements CliRenderer {
     this.multiBar = null
   }
 
-  providerSuccess(displayName: string, profileCount: number): void {
-    console.log(chalk.green(`[OK] ${displayName} - ${profileCount} profiles`))
+  providerSuccess(displayName: string, summary: ProviderResultSummary): void {
+    const listed = summary.listingCount ?? summary.profileCount
+    if (
+      summary.fetchLimit !== undefined &&
+      summary.fetchedCount !== undefined &&
+      listed > summary.fetchedCount
+    ) {
+      console.log(
+        chalk.green(
+          `[OK] ${displayName} - ${listed} listed, ${summary.fetchedCount} fetched (limit=${summary.fetchLimit})`,
+        ),
+      )
+      return
+    }
+    console.log(chalk.green(`[OK] ${displayName} - ${summary.profileCount} profiles`))
   }
 
   providerSkipped(displayName: string): void {
@@ -117,19 +142,16 @@ export class InteractiveRenderer implements CliRenderer {
   }
 
   formatDecisionLine(entry: DecisionLineEntry): string {
-    const verdictLabel =
-      entry.verdict === "yes"
-        ? chalk.green("YES")
-        : entry.verdict === "maybe"
-          ? chalk.yellow("MAYBE")
-          : entry.verdict === "no"
-            ? chalk.red("NO")
-            : entry.verdict === "error"
-              ? chalk.red("ERROR")
-              : chalk.gray("UNKNOWN")
+    const VERDICT_LABELS: Record<string, string> = {
+      yes: chalk.green("YES"),
+      maybe: chalk.yellow("MAYBE"),
+      no: chalk.red("NO"),
+      error: chalk.red("ERROR"),
+    }
+    const verdictLabel = VERDICT_LABELS[entry.verdict] ?? chalk.gray("UNKNOWN")
 
     const compactReason = entry.reason.trim().replaceAll(/\s+/g, " ")
-    const reason = compactReason.length > 140 ? `${compactReason.slice(0, 137)}...` : compactReason
+    const reason = compactReason.length > 500 ? `${compactReason.slice(0, 137)}...` : compactReason
     return `${chalk.dim("Last decision:")} ${verdictLabel} ${entry.profileName} — ${reason}`
   }
 

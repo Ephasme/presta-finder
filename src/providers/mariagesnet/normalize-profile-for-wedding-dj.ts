@@ -51,21 +51,30 @@ const collectImageUrls = (vendor: ParsedMariagesnetVendor): string[] => {
   return urls.filter((url, idx, arr) => arr.indexOf(url) === idx) // dedupe
 }
 
-const toCommonInput = (parsed: ParsedMariagesnetVendor): CommonProfileInput => ({
-  provider: "mariagesnet",
-  providerId: parsed.listing.vendor_id,
-  name: parsed.listing.name,
-  profileUrl: parsed.listing.storefront_url,
-  city: extractCity(parsed),
-  region: extractRegion(parsed),
-  ratingValue: parsed.profilePage?.ratingValue ?? parsed.listing.rating,
-  ratingCount: parsed.profilePage?.ratingCount ?? parsed.listing.reviews_count,
-  pricingMin: parsed.profilePage?.pricingMin ?? parsed.listing.starting_price_value,
-  pricingMax: parsed.profilePage?.pricingMax ?? null,
-  pricingCurrency: parsed.profilePage?.pricingCurrency ?? parsed.listing.currency,
-  imageUrls: collectImageUrls(parsed),
-  videoUrls: [],
-})
+const toCommonInput = (parsed: ParsedMariagesnetVendor): CommonProfileInput => {
+  const descriptionCandidates = [parsed.profilePage?.description, parsed.listing.description]
+  const description =
+    descriptionCandidates.find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    ) ?? null
+
+  return {
+    provider: "mariagesnet",
+    providerId: parsed.listing.vendor_id,
+    name: parsed.listing.name,
+    profileUrl: parsed.listing.storefront_url,
+    description,
+    city: extractCity(parsed),
+    region: extractRegion(parsed),
+    ratingValue: parsed.profilePage?.ratingValue ?? parsed.listing.rating,
+    ratingCount: parsed.profilePage?.ratingCount ?? parsed.listing.reviews_count,
+    pricingMin: parsed.profilePage?.pricingMin ?? parsed.listing.starting_price_value,
+    pricingMax: parsed.profilePage?.pricingMax ?? null,
+    pricingCurrency: parsed.profilePage?.pricingCurrency ?? parsed.listing.currency,
+    imageUrls: collectImageUrls(parsed),
+    videoUrls: [],
+  }
+}
 
 export const normalizeForWeddingDj = (
   parsed: ParsedMariagesnetVendor,

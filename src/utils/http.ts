@@ -127,9 +127,43 @@ export const httpPostJson = async (
     const snippet = textResp.body.replaceAll(/\s+/g, " ").slice(0, 200)
     throw new Error(`HTTP ${response.status} on POST ${url}: ${snippet}`)
   }
-  const parsedBody: unknown = JSON.parse(textResp.body)
+  let parsedBody: unknown
+  try {
+    parsedBody = JSON.parse(textResp.body)
+  } catch {
+    const snippet = textResp.body.replaceAll(/\s+/g, " ").slice(0, 200)
+    const contentType = textResp.contentType || "unknown"
+    throw new Error(
+      `Invalid JSON response from POST ${url} (status=${response.status}, content-type=${contentType}): ${snippet}`,
+    )
+  }
   return {
     ...textResp,
     body: parsedBody,
   }
+}
+
+export const httpPostText = async (
+  url: string,
+  body: unknown,
+  timeoutMs: number,
+  headers: HttpHeaders,
+  signal?: AbortSignal,
+): Promise<HttpResponse<string>> => {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+    signal: withTimeoutSignal(timeoutMs, signal),
+  })
+
+  const textResp = await readResponseText(response)
+  if (!response.ok) {
+    const snippet = textResp.body.replaceAll(/\s+/g, " ").slice(0, 200)
+    throw new Error(`HTTP ${response.status} on POST ${url}: ${snippet}`)
+  }
+  return textResp
 }

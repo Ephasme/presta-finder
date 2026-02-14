@@ -69,6 +69,7 @@ export interface CommonProfileFields {
   providerId: string | null
   name: string | null
   profileUrl: string | null
+  description: string | null
   reputation: ProfileReputation
   location: ProfileLocation
   availability: ProfileAvailability

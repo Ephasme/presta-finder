@@ -1,27 +1,32 @@
+import { appendFileSync } from "node:fs"
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 
 import { Command } from "commander"
+import OpenAI from "openai"
+import pLimit from "p-limit"
 import { z } from "zod"
 
 import type { ReasoningEffort } from "openai/resources/shared.js"
 
 import { readEnvConfig } from "./config.js"
-import { evaluateProfiles, type EvalProgressEvent } from "./eval/evaluate-profiles.js"
+import { RunStore } from "./db/store.js"
+import { evaluateOneProfile, type EvaluationResult } from "./eval/evaluate-profiles.js"
 import { loadCriteriaText } from "./eval/load-criteria-template.js"
+import { profileTitle } from "./eval/profile-title.js"
 import { renderReport } from "./eval/render-report.js"
-import { mergeProfiles } from "./merge/merge-profiles.js"
-import type { AnyServiceProfile } from "./service-types/merged.js"
+import type { ProfileTask } from "./pipeline/types.js"
 import { getServiceTypeConfig, isServiceTypeId } from "./service-types/registry.js"
 import type { ServiceTypeId, SearchContext } from "./service-types/types.js"
 import { ALL_PROVIDERS, isProviderName, type ProviderName } from "./providers/registry.js"
-import type { Provider, VerboseLog } from "./providers/types.js"
+import type { Provider, ProviderListResult, VerboseLog } from "./providers/types.js"
 import { FileArtifactService } from "./providers/file-artifact-service.js"
 import { CacheService } from "./providers/cache-service.js"
 import { createRenderer } from "./rendering/index.js"
 import type { CliRenderer, FileEntry, ServiceStatus } from "./rendering/types.js"
 import { isCancellationError, throwIfAborted } from "./utils/cancel.js"
 import { geocode } from "./utils/geocode.js"
+import { sleep } from "./utils/sleep.js"
 
 type ProviderArg = ProviderName | "all"
 type DecisionVerdict = "yes" | "maybe" | "no" | "error" | "unknown"
@@ -37,9 +42,9 @@ interface CliOptions {
   runId?: string
   collectOnly: boolean
   dryRun: boolean
-  plain: boolean
   verbose: boolean
-  profileConcurrency: boolean
+  concurrency: number
+  minScore: number
   providers: ProviderArg[]
   serviceType: ServiceTypeId
   location: string
@@ -109,9 +114,9 @@ const createProgram = (): Command => {
     .option("--run-id <id>", "Run id")
     .option("--collect-only", "Fetch + merge only, skip evaluation", false)
     .option("--dry-run", "No network calls", false)
-    .option("--plain", "Use plain non-interactive output", false)
     .option("--verbose", "Show detailed timing logs", false)
-    .option("--no-profile-concurrency", "Disable profile page concurrent fetching")
+    .option("--concurrency <number>", "Number of parallel workers", "5")
+    .option("--min-score <number>", "Minimum score for report inclusion", "60")
     .option(
       "--providers <providers...>",
       "Providers to run: 1001dj linkaband livetonight mariagesnet all",
@@ -122,9 +127,13 @@ const createProgram = (): Command => {
       "Service type (e.g. wedding-dj, kids-entertainer)",
       "wedding-dj",
     )
-    .option("--location <location>", 'Location (city name or "lat,lng")', "48.98,1.98")
-    .option("--date-from <date>", "Date range start (DD-MM-YYYY)", "01-06-2025")
-    .option("--date-to <date>", "Date range end (DD-MM-YYYY)", "30-09-2025")
+    .option(
+      "--location <location>",
+      'Location (city name or "lat,lng")',
+      "48.857547499999995,2.3513764999999998",
+    )
+    .option("--date-from <date>", "Date range start (DD-MM-YYYY)", "28-08-2026")
+    .option("--date-to <date>", "Date range end (DD-MM-YYYY)", "28-08-2026")
     .option("--fetch-limit <number>", "Max profiles to fetch per provider")
     .option("--budget-target <number>", "Target budget", "1000")
     .option("--budget-max <number>", "Max budget", "1300")
@@ -138,9 +147,15 @@ const cliOptionsSchema = z.object({
   runId: z.string().optional(),
   collectOnly: z.boolean().default(false),
   dryRun: z.boolean().default(false),
-  plain: z.boolean().default(false),
   verbose: z.boolean().default(false),
-  profileConcurrency: z.boolean().default(true),
+  concurrency: z
+    .union([z.string(), z.number()])
+    .transform((v) => Number(v))
+    .pipe(z.number().int().min(1).max(20)),
+  minScore: z
+    .union([z.string(), z.number()])
+    .transform((v) => Number(v))
+    .pipe(z.number().int().min(0).max(100)),
   providers: providerArgsSchema,
   serviceType: z
     .string()
@@ -169,14 +184,14 @@ const parseOptions = (program: Command): CliOptions => {
     runId: opts["runId"],
     collectOnly: opts["collectOnly"] ?? false,
     dryRun: opts["dryRun"] ?? false,
-    plain: opts["plain"] ?? false,
     verbose: opts["verbose"] ?? false,
-    profileConcurrency: opts["profileConcurrency"] ?? true,
+    concurrency: opts["concurrency"] ?? "5",
+    minScore: opts["minScore"] ?? "60",
     providers: opts["providers"] ?? ["all"],
     serviceType: opts["serviceType"] ?? "wedding-dj",
-    location: opts["location"] ?? "48.98,1.98",
-    dateFrom: opts["dateFrom"] ?? "01-06-2025",
-    dateTo: opts["dateTo"] ?? "30-09-2025",
+    location: opts["location"] ?? "48.857547499999995,2.3513764999999998",
+    dateFrom: opts["dateFrom"] ?? "28-08-2026",
+    dateTo: opts["dateTo"] ?? "28-08-2026",
     fetchLimit: opts["fetchLimit"],
     budgetTarget: opts["budgetTarget"] ?? "1000",
     budgetMax: opts["budgetMax"] ?? "1300",
@@ -206,7 +221,7 @@ const listGeneratedFiles = async (outputDir: string): Promise<FileEntry[]> => {
   const entries: FileEntry[] = []
 
   for (const file of files.sort()) {
-    if (!file.endsWith(".json") && !file.endsWith(".md")) {
+    if (!file.endsWith(".json") && !file.endsWith(".md") && !file.endsWith(".jsonl")) {
       continue
     }
     const fullPath = join(outputDir, file)
@@ -246,30 +261,11 @@ const setupSigintCancellation = (renderer: CliRenderer): SigintCancellationHandl
   }
 }
 
-interface ProviderTaskResult {
-  providerName: string
-  displayName: string
-  profiles: AnyServiceProfile[]
-  profileCount: number
-  listingCount?: number
-  fetchedCount?: number
-  fetchLimit?: number
-  errorCount: number
-}
+// ── Rate limiter ────────────────────────────────────────────────────
 
-class ProviderRunError extends Error {
-  readonly displayName: string
-  readonly cause: unknown
+const RATE_LIMIT_MS = 30
 
-  constructor(displayName: string, cause: unknown) {
-    super(
-      `Provider "${displayName}" failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    )
-    this.name = "ProviderRunError"
-    this.displayName = displayName
-    this.cause = cause
-  }
-}
+// ── Main ────────────────────────────────────────────────────────────
 
 const main = async (): Promise<number> => {
   const startedAt = Date.now()
@@ -278,7 +274,7 @@ const main = async (): Promise<number> => {
   const normalizedArgs = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs
   program.parse(["node", "presta-finder", ...normalizedArgs])
   const options = parseOptions(program)
-  const renderer = createRenderer(options.plain ? "plain" : "interactive")
+  const renderer = createRenderer()
   const { signal, dispose } = setupSigintCancellation(renderer)
   const isRunCancellation = (error: unknown): boolean =>
     signal.aborted && isCancellationError(error)
@@ -334,236 +330,299 @@ const main = async (): Promise<number> => {
         }
       : undefined
 
-    const tasks: Array<Promise<ProviderTaskResult>> = []
+    // ════════════════════════════════════════════════════════════════
+    // Phase 1: Listing
+    // ════════════════════════════════════════════════════════════════
+
+    const cacheServices: CacheService[] = []
+    const listingPromises: Array<{
+      provider: Provider
+      cacheService: CacheService
+      promise: Promise<ProviderListResult>
+    }> = []
 
     for (const provider of providers) {
-      const artifactService = new FileArtifactService({
-        outputFile: join(outputDir, `raw_${provider.name}.json`),
-        providerId: provider.name,
-      })
+      const artifactService = new FileArtifactService()
       const cacheService = new CacheService(artifactService)
-      renderer.fetchStarted(provider.displayName)
-      const progress = renderer.createProgressTracker(provider.name)
+      cacheServices.push(cacheService)
 
-      tasks.push(
-        (async (): Promise<ProviderTaskResult> => {
-          try {
-            verboseLog?.(provider.name, "task started")
-            const result = await provider.run(
-              {
-                outputDir,
-                cacheService,
-                dryRun: options.dryRun,
-                profileConcurrency: options.profileConcurrency ? 4 : 1,
-                fetchLimit: options.fetchLimit,
-                budgetTarget: options.budgetTarget,
-                budgetMax: options.budgetMax,
-                onProgress: (current, total, status) => {
-                  progress.onProgress(current, total, status)
-                },
-                verbose: verboseLog,
-                signal,
-              },
-              context,
-            )
-            verboseLog?.(
-              provider.name,
-              `task finished (profiles=${result.profileCount}, errors=${result.errors.length})`,
-            )
+      renderer.listingStarted(provider.displayName)
 
-            // Log non-fatal errors if verbose
-            if (options.verbose && result.errors.length > 0) {
-              for (const error of result.errors) {
-                verboseLog?.(provider.name, `${error.step} error (${error.code}): ${error.message}`)
-              }
-            }
-
-            progress.setStatus("done")
-            return {
-              providerName: provider.name,
-              displayName: provider.displayName,
-              profiles: result.profiles,
-              profileCount: result.profileCount,
-              listingCount: result.listingCount,
-              fetchedCount: result.fetchedCount,
-              fetchLimit: result.fetchLimit,
-              errorCount: result.errors.length,
-            }
-          } catch (error) {
-            verboseLog?.(provider.name, `task errored: ${getErrorMessage(error)}`)
-            progress.setStatus(isRunCancellation(error) ? "cancelled" : "error")
-            throw new ProviderRunError(provider.displayName, error)
-          }
-        })(),
-      )
+      listingPromises.push({
+        provider,
+        cacheService,
+        promise: provider.list(
+          {
+            cacheService,
+            dryRun: options.dryRun,
+            fetchLimit: options.fetchLimit,
+            budgetTarget: options.budgetTarget,
+            budgetMax: options.budgetMax,
+            verbose: verboseLog,
+            signal,
+          },
+          context,
+        ),
+      })
     }
-    verboseLog?.(
-      "cli",
-      `scheduled ${tasks.length} provider tasks (running with Promise.allSettled)`,
+
+    const settled = await Promise.allSettled(
+      listingPromises.map((entry) => entry.promise),
     )
 
-    const settled = await Promise.allSettled(tasks)
-    verboseLog?.("cli", "all provider tasks settled")
-    renderer.stopProgress()
+    const allTasks: ProfileTask[] = []
+    const seenDedupKeys = new Set<string>()
 
-    const allProviderProfiles: AnyServiceProfile[][] = []
-    for (const item of settled) {
+    for (const [i, item] of settled.entries()) {
+      const entry = listingPromises[i]
+
       if (item.status === "fulfilled") {
-        const run = item.value
-        allProviderProfiles.push(run.profiles)
-
-        if (run.errorCount > 0) {
-          verboseLog?.(
-            "cli",
-            `${run.providerName} completed with ${run.errorCount} non-fatal errors`,
-          )
+        const result = item.value
+        renderer.listingComplete(
+          entry.provider.displayName,
+          result.tasks.length,
+          result.listingCount,
+        )
+        // Log listing errors if any
+        for (const error of result.errors) {
+          renderer.listingError(entry.provider.displayName, error.message)
         }
-        renderer.providerSuccess(run.displayName, {
-          profileCount: run.profileCount,
-          listingCount: run.listingCount,
-          fetchedCount: run.fetchedCount,
-          fetchLimit: run.fetchLimit,
-        })
-        continue
-      }
-
-      const reason: unknown = item.reason
-      if (reason instanceof ProviderRunError) {
-        if (isRunCancellation(reason.cause)) {
-          renderer.providerCancelled(reason.displayName)
-          throw reason.cause
+        // Dedup tasks
+        for (const task of result.tasks) {
+          if (!seenDedupKeys.has(task.dedupKey)) {
+            seenDedupKeys.add(task.dedupKey)
+            allTasks.push(task)
+          }
         }
-        renderer.providerError(reason.displayName, getErrorMessage(reason.cause))
       } else {
-        throw reason
+        const reason: unknown = item.reason
+        if (isRunCancellation(reason)) {
+          throw reason
+        }
+        renderer.listingError(
+          entry.provider.displayName,
+          getErrorMessage(reason),
+        )
       }
     }
 
     throwIfAborted(signal)
-    if (allProviderProfiles.length === 0) {
-      renderer.error("No provider output available")
+
+    if (allTasks.length === 0) {
+      renderer.error("No tasks to process (all providers returned 0 tasks)")
       return 1
     }
 
-    const mergeSpinner = renderer.createSpinner("Merging profiles")
-    let mergedProfiles: AnyServiceProfile[] = []
-    try {
-      mergedProfiles = mergeProfiles(allProviderProfiles)
-      throwIfAborted(signal)
-      const mergedFile = join(outputDir, "merged_profiles.json")
-      await writeFile(mergedFile, `${JSON.stringify(mergedProfiles, null, 2)}\n`, "utf-8")
-      mergeSpinner.succeed(`Merged ${mergedProfiles.length} unique profiles`)
-    } catch (error) {
-      if (isRunCancellation(error)) {
-        mergeSpinner.warn("Merging profiles — cancelled")
-        throw error
-      }
-      mergeSpinner.fail(`Merging profiles — ${getErrorMessage(error)}`)
-      throw error
-    }
+    verboseLog?.(
+      "cli",
+      `listing phase complete: ${allTasks.length} deduped tasks from ${providers.length} providers`,
+    )
 
+    // ════════════════════════════════════════════════════════════════
+    // Phase 2: Worker pool
+    // ════════════════════════════════════════════════════════════════
+
+    const store = await RunStore.open(runId)
+    await store.createRun({
+      serviceType: options.serviceType,
+      model: options.model,
+      location: resolvedLocation.text,
+    })
+
+    const env = readEnvConfig()
+    const client =
+      options.dryRun || !env.openaiApiKey ? null : new OpenAI({ apiKey: env.openaiApiKey })
+
+    let criteriaText: string | null = null
     if (!options.collectOnly) {
-      const evalSpinner = renderer.createSpinner("Evaluating 0/0 — 0Y 0M 0N 0E")
-      const decisionLogFile = join(outputDir, "decision_log.jsonl")
-      const env = readEnvConfig()
-      if (!env.openaiApiKey && !options.dryRun) {
-        evalSpinner.fail("Cannot evaluate: OPENAI_API_KEY not configured")
-        return 1
-      }
-
-      const tally = { yes: 0, maybe: 0, no: 0, error: 0 }
-      let latestDecisionLine: string | null = null
-      const decisionLogEntries: DecisionLogEntry[] = []
-      const lastDecisionByWorker = new Map<number, string>()
-      let workerCount = 0
-
-      const criteriaText = loadCriteriaText(options.serviceType, {
-        budgetTarget: options.budgetTarget,
-        budgetMax: options.budgetMax,
-      })
+      criteriaText = loadCriteriaText(options.serviceType)
       const promptFile = join(outputDir, `${options.serviceType}_eval_prompt.md`)
       await writeFile(promptFile, criteriaText, "utf-8")
+    }
 
-      const onProgress = (event: EvalProgressEvent): void => {
-        if (event.error) {
-          tally.error += 1
-        } else if (event.verdict) {
-          tally[event.verdict] += 1
+    const decisionLogFile = join(outputDir, "decision_log.jsonl")
+    const providerLastFetch = new Map<string, number>()
+    const limit = pLimit(options.concurrency)
+    const taskTotal = allTasks.length
+    let taskIndex = 0
+
+    const workerTasks = allTasks.map((task) =>
+      limit(async () => {
+        taskIndex += 1
+        const currentIndex = taskIndex
+        const worker = 1 + ((currentIndex - 1) % options.concurrency)
+
+        try {
+          throwIfAborted(signal)
+
+          // 0. Per-provider rate limit
+          const lastFetch = providerLastFetch.get(task.provider) ?? 0
+          const elapsed = Date.now() - lastFetch
+          if (elapsed < RATE_LIMIT_MS) {
+            await sleep(RATE_LIMIT_MS - elapsed, signal)
+          }
+
+          // 1. Fetch + parse + normalize
+          renderer.updateWorkerProgress({
+            taskIndex: currentIndex,
+            taskTotal,
+            worker,
+            workerTotal: options.concurrency,
+            provider: task.provider,
+            target: task.target,
+            phase: "fetching",
+          })
+
+          const profile = await task.execute(signal)
+          providerLastFetch.set(task.provider, Date.now())
+
+          // 2. Persist profile
+          const profileId = await store.insertProfile(profile)
+
+          // 3. Evaluate (skip if --collect-only)
+          let evalResult: EvaluationResult | null = null
+          if (!options.collectOnly && criteriaText) {
+            renderer.updateWorkerProgress({
+              taskIndex: currentIndex,
+              taskTotal,
+              worker,
+              workerTotal: options.concurrency,
+              provider: task.provider,
+              target: task.target,
+              phase: "evaluating",
+            })
+
+            evalResult = await evaluateOneProfile({
+              profile,
+              client,
+              model: options.model,
+              reasoningEffort: options.reasoningEffort,
+              criteriaText,
+              dryRun: options.dryRun,
+              signal,
+            })
+
+            await store.insertEvaluation(profileId, {
+              score: evalResult.evaluation?.score ?? null,
+              verdict: evalResult.evaluation?.verdict ?? null,
+              summary: evalResult.evaluation?.summary ?? null,
+              evalJson: evalResult.evaluation ?? null,
+              error: evalResult.error,
+              rawOutput: evalResult.rawOutput,
+              requestId: evalResult.requestId ?? null,
+            })
+          }
+
+          // 4. Decision log entry (real-time)
+          const verdictForLog: DecisionVerdict = evalResult?.error
+            ? "error"
+            : (evalResult?.evaluation?.verdict ?? "unknown")
+          const reasonForLog = (
+            evalResult?.evaluation?.summary ??
+            evalResult?.error ??
+            "No evaluation"
+          ).trim()
+
+          const logEntry: DecisionLogEntry = {
+            timestamp: new Date().toISOString(),
+            index: currentIndex,
+            total: taskTotal,
+            profileName: profileTitle(profile),
+            provider: profile.provider,
+            link: profile.profileUrl ?? null,
+            verdict: verdictForLog,
+            reason: reasonForLog,
+          }
+          appendFileSync(decisionLogFile, `${JSON.stringify(logEntry)}\n`)
+
+          // 5. Report progress
+          renderer.updateWorkerProgress({
+            taskIndex: currentIndex,
+            taskTotal,
+            worker,
+            workerTotal: options.concurrency,
+            provider: task.provider,
+            target: task.target,
+            phase: "done",
+            verdict: evalResult?.evaluation?.verdict ?? undefined,
+            score: evalResult?.evaluation?.score ?? undefined,
+          })
+        } catch (error) {
+          if (isRunCancellation(error)) {
+            throw error
+          }
+          renderer.updateWorkerProgress({
+            taskIndex: currentIndex,
+            taskTotal,
+            worker,
+            workerTotal: options.concurrency,
+            provider: task.provider,
+            target: task.target,
+            phase: "error",
+          })
+          renderer.warn(
+            `Task error (${task.provider}/${task.target}): ${getErrorMessage(error)}`,
+          )
         }
+      }),
+    )
 
-        const verdictForLog: DecisionVerdict = event.error ? "error" : (event.verdict ?? "unknown")
-        const reasonForLog = (event.reason ?? event.error ?? "No reasoning provided").trim()
-        const logEntry: DecisionLogEntry = {
-          timestamp: new Date().toISOString(),
-          index: event.index,
-          total: event.total,
-          profileName: event.profileName,
-          provider: event.provider,
-          link: event.profileUrl ?? null,
-          verdict: verdictForLog,
-          reason: reasonForLog,
+    await Promise.allSettled(workerTasks)
+
+    // Re-throw cancellation if it happened
+    if (signal.aborted) {
+      throw signal.reason
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Phase 2b: Flush caches
+    // ════════════════════════════════════════════════════════════════
+
+    for (const cacheService of cacheServices) {
+      try {
+        const persistedFiles = await cacheService.flushPendingArtifacts()
+        if (persistedFiles.length > 0) {
+          verboseLog?.("cli", `flushed ${persistedFiles.length} cache artifact(s)`)
         }
-
-        decisionLogEntries.push(logEntry)
-        latestDecisionLine = renderer.formatDecisionLine({
-          profileName: event.profileName,
-          verdict: verdictForLog,
-          reason: reasonForLog,
-        })
-        workerCount = Math.max(workerCount, event.workerTotal)
-        lastDecisionByWorker.set(event.worker, `W${event.worker} ${latestDecisionLine}`)
-
-        const progressLine = `Evaluating ${event.index}/${event.total} — ${tally.yes}Y ${tally.maybe}M ${tally.no}N ${tally.error}E`
-        const workerLines =
-          workerCount > 0
-            ? Array.from({ length: workerCount }, (_, idx) => {
-                const worker = idx + 1
-                return (
-                  lastDecisionByWorker.get(worker) ?? `W${worker} waiting for first decision...`
-                )
-              })
-            : []
-        const separator = "─".repeat(80)
-        const displayLines =
-          workerLines.length > 0
-            ? [progressLine, separator, workerLines.join(`\n${separator}\n`)]
-            : [progressLine]
-        evalSpinner.update(displayLines.join("\n"))
+      } catch (error) {
+        verboseLog?.("cli", `cache flush failed: ${getErrorMessage(error)}`)
       }
+    }
 
-      const evals = await evaluateProfiles({
-        profiles: mergedProfiles,
-        model: options.model,
-        reasoningEffort: options.reasoningEffort,
-        criteriaText,
-        concurrency: 4,
-        dryRun: options.dryRun,
-        onProgress,
-        apiKey: env.openaiApiKey,
-        signal,
-      })
+    // ════════════════════════════════════════════════════════════════
+    // Phase 3: Consolidation
+    // ════════════════════════════════════════════════════════════════
 
+    if (!options.collectOnly) {
+      const results = await store.getEvaluatedProfiles(options.minScore)
       const serviceTypeConfig = getServiceTypeConfig(options.serviceType)
+
+      // Convert EvaluationRow[] to EvaluationResult[] for renderReport
+      const evalResults: EvaluationResult[] = results.map((row) => ({
+        profile: row.profile,
+        evaluation: row.evalJson,
+        error: row.error,
+        rawOutput: row.rawOutput,
+        requestId: row.requestId,
+      }))
+
       const report = renderReport({
-        evals,
+        evals: evalResults,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
         verbosity: "low",
-        criteriaText,
+        criteriaText: criteriaText ?? "",
         serviceTypeLabel: serviceTypeConfig.label,
       })
       const reportFile = join(outputDir, `${options.serviceType}_evaluation_report.md`)
       await writeFile(reportFile, report, "utf-8")
-      const decisionLogContent = decisionLogEntries.map((entry) => JSON.stringify(entry)).join("\n")
-      await writeFile(decisionLogFile, decisionLogContent ? `${decisionLogContent}\n` : "", "utf-8")
-      evalSpinner.succeed(
-        `Evaluation complete (${tally.yes}Y ${tally.maybe}M ${tally.no}N ${tally.error}E)`,
-      )
     }
 
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000)
     renderer.pipelineComplete(elapsedSeconds, outputDir)
     renderer.showFiles(await listGeneratedFiles(outputDir))
+
+    store.close()
     return 0
   } catch (error) {
     if (isRunCancellation(error)) {

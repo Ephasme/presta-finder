@@ -1,6 +1,6 @@
 import type { PromptConfig } from "./prompt-types.js"
 import type { ServiceTypeConfig, ServiceTypeId } from "./types.js"
-import { weddingDjPromptConfig } from "./wedding-dj/prompt.js"
+import { weddingDjPromptConfig } from "./wedding-dj/prompt-parser.js"
 
 const SERVICE_TYPE_CONFIGS: ReadonlyMap<ServiceTypeId, ServiceTypeConfig> = new Map<
   ServiceTypeId,

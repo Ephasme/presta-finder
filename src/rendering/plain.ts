@@ -2,10 +2,8 @@ import type {
   CliRenderer,
   DecisionLineEntry,
   FileEntry,
-  ProgressTracker,
-  ProviderResultSummary,
   ServiceStatus,
-  SpinnerHandle,
+  WorkerProgressEvent,
 } from "./types.js"
 
 export class PlainRenderer implements CliRenderer {
@@ -41,116 +39,44 @@ export class PlainRenderer implements CliRenderer {
     console.log("")
   }
 
-  fetchStarted(displayName: string): void {
-    console.log(`Fetching ${displayName}`)
+  // --- Phase 1: Listing ---
+
+  listingStarted(displayName: string): void {
+    console.log(`[LISTING] ${displayName} - fetching...`)
   }
 
-  createProgressTracker(providerName: string): ProgressTracker {
-    let current = 0
-    let total = 0
-    let status = "starting"
-    let phase: "listing" | "fetching" = "listing"
-    let lastBucket = -1
-    let lastLine = ""
+  listingComplete(displayName: string, taskCount: number, listingCount: number): void {
+    console.log(`[LISTING] ${displayName} - ${taskCount} tasks from ${listingCount} listings`)
+  }
 
-    const logLine = (force: boolean): void => {
-      let line: string
-      if (phase === "listing") {
-        // Listing phase — show status only, no bar numbers
-        line = `[${providerName}] ${status}`
-        if (line === lastLine && !force) {
-          return
-        }
-      } else {
-        // Fetching phase — show progress numbers
-        const safeTotal = total > 0 ? total : 1
-        const ratio = total > 0 ? current / total : 0
-        const bucket = Math.floor(ratio * 10)
-        const shouldLog =
-          force || current === 0 || (total > 0 && current >= total) || bucket !== lastBucket
+  listingError(displayName: string, errorMessage: string): void {
+    console.log(`[LISTING ERR] ${displayName} - ${errorMessage}`)
+  }
 
-        if (!shouldLog) {
-          return
-        }
+  listingSkipped(displayName: string): void {
+    console.log(`[LISTING SKIP] ${displayName}`)
+  }
 
-        lastBucket = bucket
-        line = `[${providerName}] ${current}/${safeTotal} ${status}`
-        if (line === lastLine) {
-          return
-        }
+  // --- Phase 2: Worker pool ---
+
+  updateWorkerProgress(event: WorkerProgressEvent): void {
+    const prefix = `[${event.taskIndex}/${event.taskTotal}] [W${event.worker}]`
+    switch (event.phase) {
+      case "fetching":
+        console.log(`${prefix} fetching ${event.provider}/${event.target}`)
+        break
+      case "evaluating":
+        console.log(`${prefix} evaluating ${event.provider}/${event.target}`)
+        break
+      case "done": {
+        const verdictStr = event.verdict ? ` ${event.verdict.toUpperCase()}` : ""
+        const scoreStr = event.score !== undefined ? ` score=${event.score}` : ""
+        console.log(`${prefix} done ${event.provider}/${event.target}${verdictStr}${scoreStr}`)
+        break
       }
-
-      console.log(line)
-      lastLine = line
-    }
-
-    return {
-      onProgress(nextCurrent, nextTotal, nextStatus) {
-        current = nextCurrent
-        phase = nextStatus === undefined || nextStatus === "fetching" ? "fetching" : "listing"
-        status = nextStatus ?? "fetching"
-        if (nextTotal > 0) {
-          total = nextTotal
-        }
-        logLine(false)
-      },
-      setStatus(nextStatus) {
-        status = nextStatus
-        logLine(true)
-      },
-    }
-  }
-
-  stopProgress(): void {
-    // no-op
-  }
-
-  providerSuccess(displayName: string, summary: ProviderResultSummary): void {
-    const listed = summary.listingCount ?? summary.profileCount
-    if (
-      summary.fetchLimit !== undefined &&
-      summary.fetchedCount !== undefined &&
-      listed > summary.fetchedCount
-    ) {
-      console.log(
-        `[OK] ${displayName} - ${listed} listed, ${summary.fetchedCount} fetched (limit=${summary.fetchLimit})`,
-      )
-      return
-    }
-    console.log(`[OK] ${displayName} - ${summary.profileCount} profiles`)
-  }
-
-  providerSkipped(displayName: string): void {
-    console.log(`[WARN] ${displayName} - skipped`)
-  }
-
-  providerError(displayName: string, errorMessage: string): void {
-    console.log(`[ERR] ${displayName} - ${errorMessage}`)
-  }
-
-  providerCancelled(displayName: string): void {
-    console.log(`[CANCELLED] ${displayName}`)
-  }
-
-  createSpinner(text: string): SpinnerHandle {
-    console.log(`Starting: ${text}`)
-    let lastText = text
-    return {
-      update(nextText) {
-        if (nextText !== lastText) {
-          console.log(nextText)
-          lastText = nextText
-        }
-      },
-      succeed(finalText) {
-        console.log(`Done: ${finalText}`)
-      },
-      fail(finalText) {
-        console.log(`Failed: ${finalText}`)
-      },
-      warn(finalText) {
-        console.log(`Warning: ${finalText}`)
-      },
+      case "error":
+        console.log(`${prefix} error ${event.provider}/${event.target}`)
+        break
     }
   }
 
@@ -158,7 +84,7 @@ export class PlainRenderer implements CliRenderer {
     const verdict = entry.verdict.toUpperCase()
     const compactReason = entry.reason.trim().replaceAll(/\s+/g, " ")
     const reason = compactReason.length > 140 ? `${compactReason.slice(0, 137)}...` : compactReason
-    return `Last decision: ${verdict} ${entry.profileName} — ${reason}`
+    return `${verdict} ${entry.profileName} — ${reason}`
   }
 
   logVerbose(provider: string, message: string, elapsedSec: number): void {

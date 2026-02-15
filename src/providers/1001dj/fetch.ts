@@ -79,7 +79,7 @@ export const fetchListingPages = async (
     fetchPage: async (pageNum) => {
       const pageParams: SearchParams = { ...baseParams, page: pageNum }
       const url = buildUrl(endpoint, toQueryParams(pageParams))
-      const responseBody = await cacheService.getOrFetchArtifact({
+      const responseBody = await cacheService.getHTML({
         artifactType: "listing_page",
         request: {
           method: "GET",
@@ -161,7 +161,7 @@ export const fetchProfilePage = async (
     : `${PROFILE_BASE_URL}${url.startsWith("/") ? "" : "/"}${url}`
 
   try {
-    const html = await cacheService.getOrFetchArtifact({
+    const html = await cacheService.getHTML({
       artifactType: "profile_page",
       request: {
         method: "GET",

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 
-import { evaluateProfiles } from "../../src/eval/evaluate-profiles.js"
+import { evaluateOneProfile } from "../../src/eval/evaluate-profiles.js"
 import type { ServiceProfile } from "../../src/service-types/types.js"
 
 const makeTestProfile = (): ServiceProfile<"wedding-dj"> => ({
@@ -62,30 +62,26 @@ const makeTestProfile = (): ServiceProfile<"wedding-dj"> => ({
   },
 })
 
-describe("evaluateProfiles", () => {
-  it("emits reason and profile URL in dry-run mode", async () => {
+describe("evaluateOneProfile", () => {
+  it("returns dry-run result when dryRun is true", async () => {
     const profile = makeTestProfile()
 
-    const onProgress = vi.fn()
-    const results = await evaluateProfiles({
-      profiles: [profile],
+    const result = await evaluateOneProfile({
+      profile,
+      client: null,
       model: "gpt-5-nano",
       reasoningEffort: "low",
       criteriaText: "criteria",
       dryRun: true,
-      onProgress,
-      apiKey: null,
     })
 
-    expect(results).toHaveLength(1)
-    expect(onProgress).toHaveBeenCalledTimes(1)
-    expect(onProgress).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "1001dj",
-        profileUrl: "https://example.com/dj-test",
-        verdict: null,
-        reason: "dry-run (no API call)",
-      }),
-    )
+    expect(result.profile).toBe(profile)
+    expect(result.evaluation).toBeNull()
+    expect(result.error).toBe("dry-run (no API call)")
+    expect(result.rawOutput).toBeNull()
   })
+
+  // TODO: Add tests for actual API calls with mocked OpenAI client
+  // TODO: Add tests for refusal handling
+  // TODO: Add tests for API error handling
 })

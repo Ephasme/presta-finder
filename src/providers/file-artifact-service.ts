@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { z } from "zod"
 
 import type {
   ArtifactReadArgs,
@@ -11,30 +11,21 @@ import type {
 } from "./artifact-service.js"
 import { toRecordOrEmpty } from "../utils/type-guards.js"
 
-const artifactRequestSchema = z.object({
-  method: z.string(),
-  url: z.string(),
-  body: z.unknown().optional(),
-})
-
-const fileArtifactManifestEntrySchema = z.object({
-  artifactType: z.string(),
-  fingerprint: z.string(),
-  fileName: z.string(),
-  request: artifactRequestSchema,
-})
-
-const fileArtifactManifestSchema = z.object({
-  providerId: z.string(),
-  artifacts: z.array(fileArtifactManifestEntrySchema),
-})
-
-type FileArtifactManifestEntry = z.infer<typeof fileArtifactManifestEntrySchema>
-type FileArtifactManifest = z.infer<typeof fileArtifactManifestSchema>
-
 export interface FileArtifactServiceConfig {
-  outputFile: string
-  providerId: string
+  rawDir?: string
+}
+
+type RawArtifactBucket = "listings" | "profiles"
+
+const DEFAULT_SHARED_RAW_DIR = join(homedir(), ".presta-finder", "raw")
+
+const artifactBucketByType: Readonly<Partial<Record<string, RawArtifactBucket>>> = {
+  listing_recommendation_response: "listings",
+  listing_page: "listings",
+  listing_response: "listings",
+  listing_profile_batch_response: "profiles",
+  profile_page: "profiles",
+  profile_response: "profiles",
 }
 
 const stableSerialize = (value: unknown): string => {
@@ -64,61 +55,43 @@ const sanitizeArtifactType = (value: string): string =>
     .replaceAll(/[^a-z0-9_-]+/g, "_")
     .replaceAll(/^_+|_+$/g, "") || "artifact"
 
-const manifestEntryKey = (entry: FileArtifactManifestEntry): string =>
-  `${entry.artifactType}:${entry.fingerprint}`
+const resolveRawDir = (rawDir?: string): string => {
+  if (!rawDir) {
+    return DEFAULT_SHARED_RAW_DIR
+  }
+  if (rawDir === "~") {
+    return homedir()
+  }
+  if (rawDir.startsWith("~/")) {
+    return join(homedir(), rawDir.slice(2))
+  }
+  return rawDir
+}
+
+const resolveArtifactBucket = (artifactType: string): RawArtifactBucket => {
+  const normalizedType = sanitizeArtifactType(artifactType)
+  const explicitBucket = artifactBucketByType[normalizedType]
+  if (explicitBucket) {
+    return explicitBucket
+  }
+  return normalizedType.includes("profile") ? "profiles" : "listings"
+}
 
 export class FileArtifactService implements ArtifactService {
-  private readonly runOutputDir: string
+  private readonly rawDir: string
 
-  constructor(private readonly config: FileArtifactServiceConfig) {
-    this.runOutputDir = dirname(config.outputFile)
+  constructor(config: FileArtifactServiceConfig = {}) {
+    this.rawDir = resolveRawDir(config.rawDir)
   }
 
-  private resolveProviderRawDir(): string {
-    return join(this.runOutputDir, "raw", this.config.providerId)
-  }
-
-  private resolveProviderArtifactsDir(): string {
-    return join(this.resolveProviderRawDir(), "artifacts")
-  }
-
-  private resolveManifestPath(): string {
-    return join(this.resolveProviderRawDir(), "manifest.json")
-  }
-
-  private buildArtifactFileName(artifactType: string, request: ArtifactRequest): string {
-    const sanitizedArtifactType = sanitizeArtifactType(artifactType)
+  private buildArtifactFileName(request: ArtifactRequest): string {
     const fingerprint = buildFingerprint(request)
-    return `${sanitizedArtifactType}_${fingerprint}.json`
+    return `${fingerprint}.txt`
   }
 
   private resolveArtifactPath(artifactType: string, request: ArtifactRequest): string {
-    return join(
-      this.resolveProviderArtifactsDir(),
-      this.buildArtifactFileName(artifactType, request),
-    )
-  }
-
-  private async readExistingManifest(): Promise<FileArtifactManifestEntry[]> {
-    try {
-      const manifestPayload = await readFile(this.resolveManifestPath(), "utf-8")
-      let raw: unknown
-      try {
-        raw = JSON.parse(manifestPayload)
-      } catch {
-        return []
-      }
-      const parsed = fileArtifactManifestSchema.safeParse(raw)
-      if (!parsed.success) {
-        return []
-      }
-      return parsed.data.artifacts
-    } catch (error: unknown) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-        return []
-      }
-      throw error
-    }
+    const bucket = resolveArtifactBucket(artifactType)
+    return join(this.rawDir, bucket, this.buildArtifactFileName(request))
   }
 
   async read(args: ArtifactReadArgs): Promise<string | null> {
@@ -134,43 +107,17 @@ export class FileArtifactService implements ArtifactService {
   }
 
   async write(artifacts: ArtifactSpec[]): Promise<string[]> {
-    const providerArtifactsDir = this.resolveProviderArtifactsDir()
-    await mkdir(providerArtifactsDir, { recursive: true })
-
+    if (artifacts.length === 0) {
+      return []
+    }
     const files: string[] = []
-    const newManifestEntries: FileArtifactManifestEntry[] = []
-    const existingManifestEntries = await this.readExistingManifest()
 
     for (const artifact of artifacts) {
-      const artifactType = sanitizeArtifactType(artifact.artifactType)
-      const fileName = this.buildArtifactFileName(artifactType, artifact.request)
-      const targetFile = join(providerArtifactsDir, fileName)
-      const fingerprint = buildFingerprint(artifact.request)
+      const targetFile = this.resolveArtifactPath(artifact.artifactType, artifact.request)
+      await mkdir(dirname(targetFile), { recursive: true })
       await writeFile(targetFile, artifact.payload, "utf-8")
       files.push(targetFile)
-      newManifestEntries.push({
-        artifactType,
-        fingerprint,
-        fileName,
-        request: artifact.request,
-      })
     }
-
-    const mergedManifestEntriesByKey = new Map<string, FileArtifactManifestEntry>()
-    for (const existingEntry of existingManifestEntries) {
-      mergedManifestEntriesByKey.set(manifestEntryKey(existingEntry), existingEntry)
-    }
-    for (const newEntry of newManifestEntries) {
-      mergedManifestEntriesByKey.set(manifestEntryKey(newEntry), newEntry)
-    }
-
-    const manifestPayload: FileArtifactManifest = {
-      providerId: this.config.providerId,
-      artifacts: [...mergedManifestEntriesByKey.values()],
-    }
-    const manifestPath = this.resolveManifestPath()
-    await writeFile(manifestPath, `${JSON.stringify(manifestPayload, null, 2)}\n`, "utf-8")
-    files.push(manifestPath)
 
     return files
   }

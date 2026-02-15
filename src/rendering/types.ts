@@ -12,32 +12,26 @@ export interface FileEntry {
   isReport: boolean
 }
 
-export interface ProviderResultSummary {
-  profileCount: number
-  listingCount?: number
-  fetchedCount?: number
-  fetchLimit?: number
-}
-
 export interface DecisionLineEntry {
   profileName: string
   verdict: "yes" | "maybe" | "no" | "error" | "unknown"
   reason: string
 }
 
-export interface ProgressTracker {
-  onProgress(current: number, total: number, status?: string): void
-  setStatus(status: string): void
-}
-
-export interface SpinnerHandle {
-  update(text: string): void
-  succeed(text: string): void
-  fail(text: string): void
-  warn(text: string): void
+export interface WorkerProgressEvent {
+  taskIndex: number
+  taskTotal: number
+  worker: number
+  workerTotal: number
+  provider: string
+  target: string
+  phase: "fetching" | "evaluating" | "done" | "error"
+  verdict?: "yes" | "maybe" | "no"
+  score?: number
 }
 
 export interface CliRenderer {
+  // --- Setup ---
   header(
     runId: string,
     outputDir: string,
@@ -46,15 +40,18 @@ export interface CliRenderer {
     reasoningEffort: string | null,
   ): void
   envTable(services: ServiceStatus[]): void
-  fetchStarted(displayName: string): void
-  createProgressTracker(providerName: string): ProgressTracker
-  stopProgress(): void
-  providerSuccess(displayName: string, summary: ProviderResultSummary): void
-  providerSkipped(displayName: string): void
-  providerError(displayName: string, errorMessage: string): void
-  providerCancelled(displayName: string): void
-  createSpinner(text: string): SpinnerHandle
+
+  // --- Phase 1: Listing ---
+  listingStarted(displayName: string): void
+  listingComplete(displayName: string, taskCount: number, listingCount: number): void
+  listingError(displayName: string, errorMessage: string): void
+  listingSkipped(displayName: string): void
+
+  // --- Phase 2: Worker pool ---
+  updateWorkerProgress(event: WorkerProgressEvent): void
   formatDecisionLine(entry: DecisionLineEntry): string
+
+  // --- General ---
   logVerbose(provider: string, message: string, elapsedSec: number): void
   pipelineComplete(elapsedSeconds: number, outputDir: string): void
   showFiles(files: FileEntry[]): void

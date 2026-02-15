@@ -1,18 +1,6 @@
 import type { PromptConfig } from "./prompt-types.js"
 
-export interface RenderContext {
-  budgetTarget: number
-  budgetMax: number
-  /** Override the event location from prompt config. */
-  locationOverride?: string
-}
-
-const applyTemplateVars = (text: string, ctx: RenderContext): string =>
-  text
-    .replaceAll("{budget_target}", String(ctx.budgetTarget))
-    .replaceAll("{budget_max}", String(ctx.budgetMax))
-
-export const renderSystemPrompt = (config: PromptConfig, ctx: RenderContext): string => {
+export const renderSystemPrompt = (config: PromptConfig): string => {
   const lines: string[] = []
 
   lines.push("## Rôle")
@@ -25,82 +13,21 @@ export const renderSystemPrompt = (config: PromptConfig, ctx: RenderContext): st
   lines.push(config.task)
   lines.push("")
 
-  lines.push("## Contraintes")
-  lines.push("")
-
-  if (config.eliminationCriteria.length > 0) {
-    lines.push("### Critère éliminatoire (→ verdict no immédiat)")
+  if (config.criteria.length > 0) {
+    lines.push("## Critères d'évaluation")
     lines.push("")
-    for (const criterion of config.eliminationCriteria) {
-      lines.push(`- ${applyTemplateVars(criterion, ctx)}`)
-    }
-    lines.push("")
-  }
-
-  lines.push("### Priorités (par ordre d'importance)")
-  lines.push("")
-  for (const [idx, priority] of config.priorities.entries()) {
-    lines.push(
-      `${idx + 1}. **${priority.label}** — ${applyTemplateVars(priority.description, ctx)}`,
-    )
-    if (priority.idealCondition) {
-      lines.push(`   Idéal : ${applyTemplateVars(priority.idealCondition, ctx)}`)
-    }
-    if (priority.penaltyCondition) {
-      lines.push(`   Malus : ${applyTemplateVars(priority.penaltyCondition, ctx)}`)
-    }
-    if (priority.examples?.length) {
-      lines.push(`   Exemples de cas satisfaisants pour ce critère :`)
-      for (const example of priority.examples) {
-        lines.push(`   - ${example}`)
+    for (const [idx, criterion] of config.criteria.entries()) {
+      lines.push(`${idx + 1}. **${criterion.label}** — ${criterion.description}`)
+      if (criterion.examples?.length) {
+        lines.push(`   Exemples calibrés :`)
+        for (const example of criterion.examples) {
+          lines.push(`   - **Note ${example.score}/100** — Profil type :`)
+          for (const block of example.description.split("\n")) {
+            lines.push(`     ${block}`)
+          }
+        }
       }
     }
-  }
-  lines.push("")
-
-  lines.push("### Verdict")
-  lines.push("")
-  lines.push(`- **yes** — ${applyTemplateVars(config.verdictRules.yes, ctx)}`)
-  lines.push(`- **maybe** — ${applyTemplateVars(config.verdictRules.maybe, ctx)}`)
-  lines.push(`- **no** — ${applyTemplateVars(config.verdictRules.no, ctx)}`)
-  lines.push("")
-
-  if (config.rules.length > 0) {
-    lines.push("### Règles")
-    lines.push("")
-    for (const rule of config.rules) {
-      lines.push(`- ${applyTemplateVars(rule, ctx)}`)
-    }
-    lines.push("")
-  }
-
-  if (config.eventContext) {
-    lines.push("## Contexte")
-    lines.push("")
-    if (config.eventContext.eventType) {
-      const guestInfo = config.eventContext.guestCount
-        ? `, ~${config.eventContext.guestCount} invités`
-        : ""
-      lines.push(`Événement : ${config.eventContext.eventType}${guestInfo}.`)
-    }
-    const location = ctx.locationOverride ?? config.eventContext.location
-    if (location) {
-      lines.push(`Lieu : ${location}.`)
-    }
-    if (config.eventContext.date) {
-      lines.push(`Date : ${config.eventContext.date}.`)
-    }
-    if (config.eventContext.musicalStylesDesired?.length) {
-      lines.push(
-        `Styles musicaux souhaités : ${config.eventContext.musicalStylesDesired.join(", ")}.`,
-      )
-    }
-    if (config.eventContext.musicalStylesToAvoid?.length) {
-      lines.push(
-        `Styles musicaux à rejeter (verdict no si dominants) : ${config.eventContext.musicalStylesToAvoid.join(", ")}.`,
-      )
-    }
-    lines.push(`Budget cible : ${ctx.budgetTarget}€ (strict). Budget max : ${ctx.budgetMax}€.`)
     lines.push("")
   }
 

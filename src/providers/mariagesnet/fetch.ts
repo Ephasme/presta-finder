@@ -39,14 +39,6 @@ interface BrightDataRequestBody {
   method: "GET"
 }
 
-const parseJsonContent = (content: string, context: string): unknown => {
-  try {
-    return JSON.parse(content)
-  } catch {
-    throw new Error(`Invalid JSON artifact payload for ${context}`)
-  }
-}
-
 export interface SearchParams {
   idGrupo: number
   idSector: number
@@ -127,7 +119,7 @@ export const fetchListingPages = async (
       )
       log(`listing page fetch start (page=${pageNum})`)
       const pageStart = Date.now()
-      const payloadContent = await cacheService.getOrFetchArtifact({
+      const payload = await cacheService.getJSON({
         artifactType: "listing_response",
         request: {
           method: "POST",
@@ -144,9 +136,8 @@ export const fetchListingPages = async (
           }),
       })
       log(
-        `listing page fetch done (page=${pageNum}, bytes=${payloadContent.length}, elapsedMs=${Date.now() - pageStart})`,
+        `listing page fetch done (page=${pageNum}, elapsedMs=${Date.now() - pageStart})`,
       )
-      const payload = parseJsonContent(payloadContent, targetUrl)
       return [payload]
     },
     firstPage: 1,
@@ -305,7 +296,7 @@ export const fetchProfilePage = async (
   const timeoutMs = 15_000
 
   try {
-    const payloadContent = await cacheService.getOrFetchArtifact({
+    const payloadContent = await cacheService.getHTML({
       artifactType: "profile_response",
       request: {
         method: "POST",

@@ -1,26 +1,17 @@
-import pLimit from "p-limit"
 import type { ProviderCapability, SearchContext } from "../../service-types/types.js"
-import type { ServiceProfile } from "../../service-types/merged.js"
-import { throwIfAborted } from "../../utils/cancel.js"
-import { sleep } from "../../utils/sleep.js"
+import type { AnyServiceProfile } from "../../service-types/merged.js"
 import type {
   PipelineError,
-  ProfileFetchOutcome,
-  ProfileParseOutcome,
   Provider,
-  ProviderRunOptions,
-  ProviderRunResult,
+  ProviderListOptions,
+  ProviderListResult,
 } from "../types.js"
-import { sanitizeForError } from "../types.js"
+import type { ProfileTask } from "../../pipeline/types.js"
+import type { ParsedProfilePage } from "../profile-page.js"
 import { fetchListingPages, fetchProfilePage } from "./fetch.js"
 import { parseListingPages } from "./parse.js"
 import { parseMariagesnetProfilePage } from "./parse-profile.js"
-import type { ParsedProfilePage } from "../profile-page.js"
-import { merge } from "./merge.js"
 import { normalizeForWeddingDj } from "./normalize-profile-for-wedding-dj.js"
-
-const CHUNK_SIZE = 50
-const PROFILE_DELAY_MS = 30
 
 export class MariagesnetProvider implements Provider {
   readonly name = "mariagesnet" as const
@@ -39,10 +30,10 @@ export class MariagesnetProvider implements Provider {
     )
   }
 
-  async run(opts: ProviderRunOptions, context: SearchContext): Promise<ProviderRunResult> {
+  async list(opts: ProviderListOptions, context: SearchContext): Promise<ProviderListResult> {
     const errors: PipelineError[] = []
     if (opts.dryRun) {
-      return { profiles: [], profileCount: 0, errors }
+      return { tasks: [], listingCount: 0, errors }
     }
 
     const log = (message: string): void => {
@@ -57,7 +48,7 @@ export class MariagesnetProvider implements Provider {
         target: null,
         message: "BRIGHTDATA_API_KEY and BRIGHTDATA_WEB_UNLOCKER_ZONE required",
       })
-      return { profiles: [], profileCount: 0, errors }
+      return { tasks: [], listingCount: 0, errors }
     }
 
     const capability = this.capabilities.find((c) => c.serviceTypeId === context.serviceType)
@@ -69,7 +60,7 @@ export class MariagesnetProvider implements Provider {
         target: null,
         message: `No capability for service type ${context.serviceType}`,
       })
-      return { profiles: [], profileCount: 0, errors }
+      return { tasks: [], listingCount: 0, errors }
     }
 
     const idGrupo =
@@ -80,7 +71,7 @@ export class MariagesnetProvider implements Provider {
     const brightdataApiKey = process.env.BRIGHTDATA_API_KEY ?? null
     const brightdataZone = process.env.BRIGHTDATA_WEB_UNLOCKER_ZONE ?? null
 
-    // ── 1. Listing fetch + parse (fatal on failure) ──────────────
+    // ── 1. Listing fetch + parse ────────────────────────────────────
     log(
       `listing stage start (serviceType=${context.serviceType}, idGrupo=${idGrupo}, idSector=${idSector}, fetchLimit=${opts.fetchLimit ?? "none"})`,
     )
@@ -95,149 +86,50 @@ export class MariagesnetProvider implements Provider {
     const listings = parseListingPages(listingResponses)
     log(`listing stage done (responses=${listingResponses.length}, vendors=${listings.length})`)
 
-    // ── 2. Profile fetch (chunked, non-fatal per URL) ────────────
+    // Only include listings with a storefront URL
     const targets = listings
-      .map((vendor) => vendor.storefront_url)
-      .filter((url): url is string => Boolean(url))
+      .filter((vendor): vendor is typeof vendor & { storefront_url: string } =>
+        Boolean(vendor.storefront_url),
+      )
       .slice(0, opts.fetchLimit)
-    const allFetchOutcomes: ProfileFetchOutcome[] = []
-    const limit = pLimit(opts.profileConcurrency)
-    const totalChunks = Math.ceil(targets.length / CHUNK_SIZE)
-    const totalTargets = targets.length
-    let completed = 0
-    log(
-      `profile fetch stage start (targets=${targets.length}, concurrency=${opts.profileConcurrency}, chunkSize=${CHUNK_SIZE})`,
-    )
 
-    if (totalTargets > 0) {
-      opts.onProgress?.(0, totalTargets)
-    }
-
-    for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
-      throwIfAborted(opts.signal)
-      const chunk = targets.slice(i, i + CHUNK_SIZE)
-      const chunkIndex = Math.floor(i / CHUNK_SIZE) + 1
-      log(`profile fetch chunk start (${chunkIndex}/${totalChunks}, size=${chunk.length})`)
-
-      const chunkResults = await Promise.all(
-        chunk.map((url) =>
-          limit(async (): Promise<ProfileFetchOutcome> => {
-            let outcome: ProfileFetchOutcome
-            try {
-              log(`profile fetch start (${url})`)
-              outcome = await fetchProfilePage(
-                opts.cacheService,
-                url,
-                brightdataApiKey,
-                brightdataZone,
-                { signal: opts.signal },
-              )
-              if (outcome.success) {
-                log(`profile fetch done (${url}, bytes=${outcome.html.length})`)
-              } else {
-                log(`profile fetch failed (${url}, message=${outcome.error.message})`)
-              }
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              log(`profile fetch exception (${url}, message=${message})`)
-              outcome = {
-                success: false,
-                target: url,
-                error: {
-                  code: "PROFILE_FETCH_FAILED",
-                  provider: "mariagesnet",
-                  step: "profile-fetch",
-                  target: sanitizeForError(url),
-                  message: sanitizeForError(message),
-                },
-              }
-            }
-            await sleep(PROFILE_DELAY_MS, opts.signal)
-            completed += 1
-            opts.onProgress?.(completed, totalTargets)
-            return outcome
-          }),
-        ),
-      )
-
-      allFetchOutcomes.push(...chunkResults)
-      const successCount = chunkResults.filter((outcome) => outcome.success).length
-      log(
-        `profile fetch chunk done (${chunkIndex}/${totalChunks}, success=${successCount}, failed=${chunkResults.length - successCount})`,
-      )
-    }
-
-    // Collect fetch errors
-    for (const outcome of allFetchOutcomes) {
-      if (!outcome.success) {
-        errors.push(outcome.error)
-      }
-    }
-
-    // ── 3. Parse profile pages (non-fatal per page) ──────────────
-    log(`profile parse stage start (pages=${allFetchOutcomes.length})`)
-    const parseOutcomes: ProfileParseOutcome<ParsedProfilePage>[] = []
-    for (const outcome of allFetchOutcomes) {
-      if (!outcome.success) continue
-      try {
-        const data = parseMariagesnetProfilePage(outcome.html)
-        parseOutcomes.push({ success: true, target: outcome.target, data })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const parseError: PipelineError = {
-          code: "PROFILE_PARSE_FAILED",
-          provider: "mariagesnet",
-          step: "profile-parse",
-          target: sanitizeForError(outcome.target),
-          message: sanitizeForError(message),
+    // ── 2. Create one ProfileTask per listing entry ─────────────────
+    const tasks: ProfileTask[] = targets.map((listing) => ({
+      provider: "mariagesnet",
+      displayName: "Mariages.net",
+      dedupKey: JSON.stringify(["mariagesnet", listing.storefront_url]),
+      target: listing.storefront_url,
+      execute: async (signal?: AbortSignal): Promise<AnyServiceProfile> => {
+        // Fetch profile page (graceful failure -> profilePage = null)
+        let profilePage: ParsedProfilePage | null = null
+        try {
+          log(`profile fetch start (${listing.storefront_url})`)
+          const outcome = await fetchProfilePage(
+            opts.cacheService,
+            listing.storefront_url,
+            brightdataApiKey,
+            brightdataZone,
+            { signal },
+          )
+          if (outcome.success) {
+            profilePage = parseMariagesnetProfilePage(outcome.html)
+            log(`profile fetch done (${listing.storefront_url}, bytes=${outcome.html.length})`)
+          } else {
+            log(`profile fetch failed (${listing.storefront_url}, message=${outcome.error.message})`)
+          }
+        } catch {
+          // fetch or parse failed -> listing-only profile
         }
-        errors.push(parseError)
-        parseOutcomes.push({ success: false, target: outcome.target, error: parseError })
-      }
-    }
-    const parsedCount = parseOutcomes.filter((outcome) => outcome.success).length
-    log(
-      `profile parse stage done (success=${parsedCount}, failed=${parseOutcomes.length - parsedCount})`,
-    )
 
-    // ── 4. Merge listing + profile data ──────────────────────────
-    const targetSet = new Set(targets)
-    const limitedListings = listings.filter((listing) =>
-      listing.storefront_url ? targetSet.has(listing.storefront_url) : false,
-    )
-    log(
-      `merge stage start (listings=${limitedListings.length}/${listings.length}, parsed=${parsedCount})`,
-    )
-    const { merged, errors: mergeErrors } = merge(limitedListings, parseOutcomes)
-    errors.push(...mergeErrors)
-    log(`merge stage done (merged=${merged.length}, errors=${mergeErrors.length})`)
+        // Normalize (listing data always available, profilePage may be null)
+        return normalizeForWeddingDj(
+          { listing, profilePage },
+          opts.budgetTarget,
+          opts.budgetMax,
+        )
+      },
+    }))
 
-    // ── 5. Normalize to ServiceProfile<"wedding-dj"> ────────────
-    log(`normalize stage start (merged=${merged.length})`)
-    const profiles: ServiceProfile<"wedding-dj">[] = []
-    for (const parsed of merged) {
-      try {
-        profiles.push(normalizeForWeddingDj(parsed, opts.budgetTarget, opts.budgetMax))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        errors.push({
-          code: "NORMALIZE_FAILED",
-          provider: "mariagesnet",
-          step: "normalize",
-          target: parsed.listing.storefront_url ?? parsed.listing.vendor_id,
-          message: sanitizeForError(message),
-        })
-      }
-    }
-    log(`normalize stage done (profiles=${profiles.length}, errors=${errors.length})`)
-
-    return {
-      profiles,
-      profileCount: profiles.length,
-      listingCount: listings.length,
-      fetchedCount: totalTargets,
-      fetchLimit: opts.fetchLimit,
-      errors,
-    }
+    return { tasks, listingCount: listings.length, errors }
   }
 }

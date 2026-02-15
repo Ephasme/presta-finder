@@ -19,11 +19,9 @@ export interface SearchParams {
   address?: string
   lat?: number
   lng?: number
-  categories?: string[]
   budget?: [number, number]
   date?: string
   gear?: string[]
-  dj?: string
   group?: string
   types?: string[]
   titles?: string[]
@@ -61,12 +59,9 @@ const toQueryParams = (params: SearchParams): Record<string, string> => {
   if (params.address) query.address = params.address
   if (params.lat !== undefined) query.lat = String(params.lat)
   if (params.lng !== undefined) query.lng = String(params.lng)
-  const categories = commaList(params.categories)
-  if (categories) query.categories = categories
   if (params.date) query.date = params.date
   const gear = commaList(params.gear)
   if (gear) query.gear = gear
-  if (params.dj) query.dj = params.dj
   if (params.group) query.group = params.group
   const types = commaList(params.types)
   if (types) query.types = types
@@ -80,7 +75,6 @@ const toQueryParams = (params: SearchParams): Record<string, string> => {
 
 export const fetchListingPages = async (
   cacheService: CacheService,
-  params: { categories: string[]; djFilter?: string },
   opts: FetchListingPagesOptions,
 ): Promise<string[]> => {
   const endpoint = DEFAULT_ENDPOINT
@@ -100,11 +94,9 @@ export const fetchListingPages = async (
           page: pageNum,
           radius: 50,
           sortedBy: "pertinence",
-          categories: params.categories,
-          dj: params.djFilter,
         }),
       )
-      const payloadContent = await cacheService.getOrFetchArtifact({
+      const payload = await cacheService.getJSON({
         artifactType: "listing_response",
         request: {
           method: "GET",
@@ -126,10 +118,11 @@ export const fetchListingPages = async (
                   {},
                 ),
                 opts.signal,
-              )
-            ).body,
-          ),
+            )
+          ).body,
+        ),
       })
+      const payloadContent = JSON.stringify(payload)
       rawJsonResponses.push(payloadContent)
       const parsed = parseLiveTonightListingResponse(payloadContent)
       return parsed
@@ -171,7 +164,7 @@ export const fetchProfilePage = async (
   const url = `${LIVETONIGHT_PROFILE_BASE_URL}/groupe-musique-dj/${profileId}-${slug}`
 
   try {
-    const html = await cacheService.getOrFetchArtifact({
+    const html = await cacheService.getHTML({
       artifactType: "profile_page",
       request: {
         method: "GET",

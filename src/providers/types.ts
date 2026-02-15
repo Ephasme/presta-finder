@@ -1,7 +1,7 @@
 import type { ProviderCapability, SearchContext } from "../service-types/types.js"
-import type { AnyServiceProfile } from "../service-types/merged.js"
 import type { VerboseLog } from "../rendering/types.js"
 import type { CacheService } from "./cache-service.js"
+import type { ProfileTask } from "../pipeline/types.js"
 
 export type { VerboseLog }
 
@@ -22,7 +22,6 @@ export type PipelineErrorCode =
   | "LISTING_PARSE_FAILED"
   | "PROFILE_FETCH_FAILED"
   | "PROFILE_PARSE_FAILED"
-  | "MERGE_FAILED"
   | "NORMALIZE_FAILED"
   | "CANCELLED"
 
@@ -34,7 +33,6 @@ export interface PipelineError {
     | "listing-parse"
     | "profile-fetch"
     | "profile-parse"
-    | "merge"
     | "normalize"
   /** Identifier of the failing target (URL, vendor ID, slug). Never contains secrets. */
   target: string | null
@@ -92,30 +90,22 @@ export const sanitizeForError = (input: string): string => {
   return cleaned
 }
 
-// ── Provider interface (run only) ───────────────────────────────────
+// ── Provider interface ──────────────────────────────────────────────
 
-export interface ProviderRunOptions {
-  outputDir: string
+export interface ProviderListOptions {
   cacheService: CacheService
   dryRun: boolean
-  /** Max parallel profile-page fetches. Defaults to 4, or 1 when --no-profile-concurrency. */
-  profileConcurrency: number
   fetchLimit?: number
-  /** Budget parameters — needed by normalize step inside run(). */
   budgetTarget: number
   budgetMax: number
-  onProgress?: (current: number, total: number, status?: string) => void
   verbose?: VerboseLog
   signal?: AbortSignal
 }
 
-export interface ProviderRunResult {
-  profiles: AnyServiceProfile[]
-  profileCount: number
-  errors: PipelineError[]
-  listingCount?: number
-  fetchedCount?: number
-  fetchLimit?: number
+export interface ProviderListResult {
+  tasks: ProfileTask[]
+  listingCount: number
+  errors: PipelineError[] // listing-phase errors only
 }
 
 export interface Provider {
@@ -123,5 +113,5 @@ export interface Provider {
   readonly displayName: string
   readonly capabilities: readonly ProviderCapability[]
   isAvailable(): boolean
-  run(opts: ProviderRunOptions, context: SearchContext): Promise<ProviderRunResult>
+  list(opts: ProviderListOptions, context: SearchContext): Promise<ProviderListResult>
 }

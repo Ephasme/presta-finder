@@ -1,25 +1,16 @@
-import pLimit from "p-limit"
 import type { ProviderCapability, SearchContext } from "../../service-types/types.js"
-import type { ServiceProfile } from "../../service-types/merged.js"
-import { throwIfAborted } from "../../utils/cancel.js"
-import { sleep } from "../../utils/sleep.js"
+import type { AnyServiceProfile } from "../../service-types/merged.js"
 import type {
   PipelineError,
-  ProfileFetchOutcome,
-  ProfileParseOutcome,
   Provider,
-  ProviderRunOptions,
-  ProviderRunResult,
+  ProviderListOptions,
+  ProviderListResult,
 } from "../types.js"
-import { sanitizeForError } from "../types.js"
+import type { ProfileTask } from "../../pipeline/types.js"
 import { DEFAULT_ENDPOINT, fetchListingPages, fetchProfilePage } from "./fetch.js"
 import { parseListingPages } from "./parse-list.js"
 import { parseProfilePage, type ProfilePageDetails } from "./parse-profile.js"
-import { merge } from "./merge.js"
 import { normalizeForWeddingDj } from "./normalize-profile-for-wedding-dj.js"
-
-const CHUNK_SIZE = 50
-const PROFILE_DELAY_MS = 30
 
 export class Dj1001Provider implements Provider {
   readonly name = "1001dj" as const
@@ -36,127 +27,51 @@ export class Dj1001Provider implements Provider {
     return true
   }
 
-  async run(opts: ProviderRunOptions, _context: SearchContext): Promise<ProviderRunResult> {
+  async list(opts: ProviderListOptions, _context: SearchContext): Promise<ProviderListResult> {
     const errors: PipelineError[] = []
     if (opts.dryRun) {
-      return { profiles: [], profileCount: 0, errors }
+      return { tasks: [], listingCount: 0, errors }
     }
 
-    // ── 1. Listing fetch + parse (fatal on failure) ──────────────
+    // ── 1. Listing fetch + parse ────────────────────────────────────
     const listingHtmlPages = await fetchListingPages(
       opts.cacheService,
       { typeEvent: "mariage" },
       { fetchLimit: opts.fetchLimit, signal: opts.signal, verbose: opts.verbose },
     )
     const listings = parseListingPages(listingHtmlPages)
+    const targets = listings.slice(0, opts.fetchLimit)
 
-    // ── 2. Profile fetch (chunked, non-fatal per URL) ────────────
-    const targets = listings.map((entry) => entry.url).slice(0, opts.fetchLimit)
-    const allFetchOutcomes: ProfileFetchOutcome[] = []
-    const limit = pLimit(opts.profileConcurrency)
-    const totalTargets = targets.length
-    let completed = 0
-
-    if (totalTargets > 0) {
-      opts.onProgress?.(0, totalTargets)
-    }
-
-    for (let i = 0; i < targets.length; i += CHUNK_SIZE) {
-      throwIfAborted(opts.signal)
-      const chunk = targets.slice(i, i + CHUNK_SIZE)
-
-      const chunkResults = await Promise.all(
-        chunk.map((url) =>
-          limit(async (): Promise<ProfileFetchOutcome> => {
-            let outcome: ProfileFetchOutcome
-            try {
-              outcome = await fetchProfilePage(opts.cacheService, url, {
-                referer: DEFAULT_ENDPOINT,
-                signal: opts.signal,
-              })
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error)
-              outcome = {
-                success: false,
-                target: url,
-                error: {
-                  code: "PROFILE_FETCH_FAILED",
-                  provider: "1001dj",
-                  step: "profile-fetch",
-                  target: sanitizeForError(url),
-                  message: sanitizeForError(message),
-                },
-              }
-            }
-            await sleep(PROFILE_DELAY_MS, opts.signal)
-            completed += 1
-            opts.onProgress?.(completed, totalTargets)
-            return outcome
-          }),
-        ),
-      )
-
-      allFetchOutcomes.push(...chunkResults)
-    }
-
-    // Collect fetch errors
-    for (const outcome of allFetchOutcomes) {
-      if (!outcome.success) {
-        errors.push(outcome.error)
-      }
-    }
-
-    // ── 3. Parse profile pages (non-fatal per page) ──────────────
-    const parseOutcomes: ProfileParseOutcome<ProfilePageDetails>[] = []
-    for (const outcome of allFetchOutcomes) {
-      if (!outcome.success) continue
-      try {
-        const data = parseProfilePage(outcome.html)
-        parseOutcomes.push({ success: true, target: outcome.target, data })
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        const parseError: PipelineError = {
-          code: "PROFILE_PARSE_FAILED",
-          provider: "1001dj",
-          step: "profile-parse",
-          target: sanitizeForError(outcome.target),
-          message: sanitizeForError(message),
+    // ── 2. Create one ProfileTask per listing entry ─────────────────
+    const tasks: ProfileTask[] = targets.map((listing) => ({
+      provider: "1001dj",
+      displayName: "1001dj",
+      dedupKey: JSON.stringify(["1001dj", listing.url]),
+      target: listing.url,
+      execute: async (signal?: AbortSignal): Promise<AnyServiceProfile> => {
+        // Fetch profile page (graceful failure -> profilePage = null)
+        let profilePage: ProfilePageDetails | null = null
+        try {
+          const outcome = await fetchProfilePage(opts.cacheService, listing.url, {
+            referer: DEFAULT_ENDPOINT,
+            signal,
+          })
+          if (outcome.success) {
+            profilePage = parseProfilePage(outcome.html)
+          }
+        } catch {
+          // fetch or parse failed -> listing-only profile
         }
-        errors.push(parseError)
-        parseOutcomes.push({ success: false, target: outcome.target, error: parseError })
-      }
-    }
 
-    // ── 4. Merge listing + profile data ──────────────────────────
-    const targetSet = new Set(targets)
-    const limitedListings = listings.filter((listing) => targetSet.has(listing.url))
-    const { merged, errors: mergeErrors } = merge(limitedListings, parseOutcomes)
-    errors.push(...mergeErrors)
+        // Normalize (listing data always available, profilePage may be null)
+        return normalizeForWeddingDj(
+          { listing, profilePage },
+          opts.budgetTarget,
+          opts.budgetMax,
+        )
+      },
+    }))
 
-    // ── 5. Normalize to ServiceProfile<"wedding-dj"> ────────────
-    const profiles: ServiceProfile<"wedding-dj">[] = []
-    for (const parsed of merged) {
-      try {
-        profiles.push(normalizeForWeddingDj(parsed, opts.budgetTarget, opts.budgetMax))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        errors.push({
-          code: "NORMALIZE_FAILED",
-          provider: "1001dj",
-          step: "normalize",
-          target: parsed.listing.url,
-          message: sanitizeForError(message),
-        })
-      }
-    }
-
-    return {
-      profiles,
-      profileCount: profiles.length,
-      listingCount: listings.length,
-      fetchedCount: totalTargets,
-      fetchLimit: opts.fetchLimit,
-      errors,
-    }
+    return { tasks, listingCount: listings.length, errors }
   }
 }
